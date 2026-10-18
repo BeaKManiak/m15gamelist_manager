@@ -22,22 +22,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-13 = Intel (x86_64), macos-14 = Apple Silicon (arm64).
-        # If macos-13 is unavailable, swap it for a newer runner and build
-        # a universal2 binary instead.
+        # macos-15 = Apple Silicon (arm64). Intel (x86_64) is no longer built:
+        # the macos-13 image was retired in Dec 2025 and Apple has dropped Intel.
         os:
-          - macos-13
-          - macos-14
-          - windows-latest
+          - macos-15
+          - windows-2025
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Install PyInstaller
         run: |
@@ -73,7 +71,7 @@ jobs:
             -DestinationPath "dist/M15Manager-windows.zip" -Force
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: M15Manager-${{ runner.os }}-${{ runner.arch }}
           path: dist/*.zip
@@ -86,13 +84,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
 
       - name: Attach builds to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*.zip
           generate_release_notes: true
