@@ -1,11 +1,31 @@
 name: Build desktop app
 
-# Run manually from the Actions tab, or automatically when you push a tag
-# like "v1.0" -> this also creates a GitHub Release with the built apps.
+# Run manually from the Actions tab (builds, then tags + publishes a release),
+# or automatically when you push a tag like "v1.0" (builds and releases that
+# exact tag). Manual runs auto-increment the newest vMAJOR.MINOR.PATCH tag
+# unless you override it or choose a minor/major bump.
 #
-# To also build on every push to main, uncomment the "branches" block.
+# To also build on every push to main (build only, no release), uncomment the
+# "branches" block.
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a tag and GitHub Release after a successful build"
+        type: boolean
+        default: true
+      bump:
+        description: "Which version part to increment (ignored if tag_override is set)"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      tag_override:
+        description: "Exact tag to use instead of auto-incrementing, e.g. v2.0.0"
+        type: string
+        required: false
   push:
     tags:
       - "v*"
@@ -16,8 +36,60 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # required to see existing tags
+
+      - name: Resolve the tag
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          OVERRIDE: ${{ inputs.tag_override }}
+          DO_RELEASE: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          tag=""
+
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            # Tag push: release exactly the tag that was pushed.
+            tag="${GITHUB_REF_NAME:-${GITHUB_REF#refs/tags/}}"
+          elif [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then
+            # Branch push: build only.
+            tag=""
+          elif [[ "${DO_RELEASE}" != "true" ]]; then
+            # Manual run with release disabled: build only.
+            tag=""
+          elif [[ -n "${OVERRIDE}" ]]; then
+            # Manual run with an explicit tag.
+            tag="${OVERRIDE}"
+          else
+            # Manual run: bump the newest vX.Y.Z tag (pre-releases ignored).
+            latest="$(git tag --list --sort=-v:refname \
+                        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+            latest="${latest:-v0.0.0}"
+            ver="${latest#v}"
+            IFS=. read -r major minor patch <<< "${ver}"
+            case "${BUMP}" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              *)     patch=$((patch + 1)) ;;
+            esac
+            tag="v${major}.${minor}.${patch}"
+          fi
+
+          echo "Resolved tag: '${tag:-<none: build only>}'"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build on ${{ matrix.os }}
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -78,9 +150,9 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    name: Publish ${{ needs.prepare.outputs.tag }}
+    needs: [prepare, build]
+    if: needs.prepare.outputs.tag != ''
     runs-on: ubuntu-latest
     steps:
       - name: Download all build artifacts
@@ -89,8 +161,11 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Attach builds to the release
+      - name: Tag and publish the release
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: artifacts/*.zip
           generate_release_notes: true
