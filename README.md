@@ -50,6 +50,8 @@ python3 -c "import catalog_sync, gamelist_manager; print('ok')"
 | `catalog_sync.py` | Library that regenerates localized `root.dat` members and `fileinfo` counts. Not run directly. |
 | `restore_gamelist.py` | Restores a system's `gamelist.xml` from the newest valid timestamped backup. |
 | `delete_gamelist_backups.py` | Finds and deletes matching timestamped gamelist backups, with a dry-run option. |
+| `m15_gui.py` | Optional Tkinter desktop GUI that wraps the three tools above. |
+| `.github/workflows/build-app.yml` | CI that packages `m15_gui.py` into macOS/Windows apps. |
 
 ## Directory layout
 
@@ -373,6 +375,77 @@ with `--dry-run` first.
    python3 delete_gamelist_backups.py --dry-run
    python3 delete_gamelist_backups.py
    ```
+
+## Desktop app (GUI)
+
+`m15_gui.py` is a graphical front-end for the three command-line tools. It does
+not modify them: it builds an argument list, runs the script on a background
+thread, and streams the output into a log pane.
+
+It provides, for the selected ROM folder:
+
+- System selector (all systems or one), `--dedup`, and XML-declaration choices.
+- Checkboxes mirroring every feature switch (remove missing, add, IDs, normalize,
+  sort, indent, force write, delete orphan images).
+- **Preview (dry run)** and **Apply** buttons, plus **Restore gamelist** and
+  **Delete backups** with preview variants.
+- A live output log and an auto-detected ROM folder (looks for `root.dat` plus
+  system folders under `/Volumes`).
+
+### Run it from source
+
+```bash
+python3 m15_gui.py
+```
+
+### Build a standalone app locally
+
+```bash
+python3 -m pip install pyinstaller
+pyinstaller --noconfirm --clean --windowed --name M15Manager m15_gui.py
+# macOS:  dist/M15Manager.app
+# Windows: dist/M15Manager.exe  (add --onefile)
+```
+
+The result needs no Python installed on the target machine.
+
+### Build via GitHub Actions
+
+Push the repo and open **Actions → Build desktop app → Run workflow**. The
+workflow also runs automatically when you push a `v*` tag, and in that case
+attaches the builds to a GitHub Release.
+
+It produces, for each platform:
+
+| Artifact | Platform |
+|---|---|
+| `M15Manager-ARM64.zip` | macOS, Apple Silicon |
+| `M15Manager-X64.zip` | macOS, Intel |
+| `M15Manager-windows.zip` | Windows |
+
+### First-launch notes (unsigned apps)
+
+The builds are **not code-signed or notarized**, because that requires a paid
+Apple Developer account (and a Windows certificate). Users will see a warning
+the first time:
+
+- **macOS:** "Apple cannot check it for malicious software." Right-click the app
+  → **Open** → **Open**, or run
+  `xattr -dr com.apple.quarantine /Applications/M15Manager.app`.
+- **Windows:** SmartScreen "Windows protected your PC" → **More info** →
+  **Run anyway**.
+
+To remove these warnings entirely, add a Developer ID certificate and notarize
+(macOS) or sign the executable (Windows) inside the workflow.
+
+### CI notes
+
+- The workflow builds on `macos-13` (Intel), `macos-14` (Apple Silicon), and
+  `windows-latest`, using Python 3.12 with Tkinter.
+- If `macos-13` is retired by GitHub, replace it and build a `universal2` binary
+  instead (requires a universal Python build).
+- Keep ROM files out of the repository; only the scripts need to be committed,
+  otherwise every CI run clones the whole collection.
 
 ## Troubleshooting
 
