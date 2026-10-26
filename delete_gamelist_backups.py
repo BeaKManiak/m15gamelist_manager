@@ -34,7 +34,7 @@ def find_backups(root: Path, recursive: bool):
             yield path
 
 
-def main() -> int:
+def main(argv=None, root=None, *, output=print) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Delete timestamped gamelist.xml backups from the current "
@@ -59,8 +59,8 @@ def main() -> int:
         help="Limit operation to one system folder, e.g. snes or gb.",
     )
 
-    args = parser.parse_args()
-    root = Path.cwd().resolve()
+    args = parser.parse_args(argv)
+    root = Path.cwd().resolve() if root is None else Path(root).expanduser().resolve()
 
     if args.system:
         if (
@@ -74,20 +74,20 @@ def main() -> int:
         search_root = root / args.system
 
         if not search_root.is_dir():
-            print(f"ERROR: System directory does not exist: {search_root}")
+            output(f"ERROR: System directory does not exist: {search_root}")
             return 2
     else:
         search_root = root
 
     backups = sorted(find_backups(search_root, args.recursive))
 
-    print(f"Root: {root}")
-    print(f"Search directory: {search_root}")
-    print(f"Mode: {'DRY RUN' if args.dry_run else 'DELETE'}")
-    print(f"Matching backups: {len(backups)}")
+    output(f"Root: {root}")
+    output(f"Search directory: {search_root}")
+    output(f"Mode: {'DRY RUN' if args.dry_run else 'DELETE'}")
+    output(f"Matching backups: {len(backups)}")
 
     if not backups:
-        print("No matching gamelist backups found.")
+        output("No matching gamelist backups found.")
         return 0
 
     deleted = 0
@@ -100,24 +100,24 @@ def main() -> int:
             relative = path
 
         if args.dry_run:
-            print(f"WOULD DELETE: {relative}")
+            output(f"WOULD DELETE: {relative}")
             continue
 
         try:
             path.unlink()
-            print(f"DELETED: {relative}")
+            output(f"DELETED: {relative}")
             deleted += 1
         except OSError as exc:
-            print(f"ERROR deleting {relative}: {exc}")
+            output(f"ERROR deleting {relative}: {exc}")
             errors += 1
 
     if args.dry_run:
-        print(f"\nDry run complete: {len(backups)} backup(s) would be deleted.")
-        print("No files were changed.")
+        output(f"\nDry run complete: {len(backups)} backup(s) would be deleted.")
+        output("No files were changed.")
         return 0
 
-    print(f"\nDeleted: {deleted}")
-    print(f"Errors: {errors}")
+    output(f"\nDeleted: {deleted}")
+    output(f"Errors: {errors}")
 
     return 1 if errors else 0
 

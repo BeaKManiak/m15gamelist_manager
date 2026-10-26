@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import io
 import zipfile
+from pathlib import Path
 
 import pytest
 
 import catalog_sync
+import delete_gamelist_backups
 import gamelist_manager
 import restore_gamelist
 from conftest import (
@@ -295,6 +297,45 @@ def test_prune_no_backups_returns_zero(make_collection_factory, monkeypatch):
     monkeypatch.chdir(collection.root)
 
     assert run_prune(monkeypatch) == 0
+
+
+def test_restore_main_accepts_explicit_root_without_chdir(make_collection_factory, monkeypatch, tmp_path):
+    collection = make_collection_factory()
+    write_backup(collection.system_dir("nes"), "20200101_000000")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    lines = []
+
+    code = restore_gamelist.main(
+        ["--system", "nes", "--dry-run"],
+        root=collection.root,
+        output=lines.append,
+    )
+
+    assert code == 0
+    assert Path.cwd() == elsewhere
+    assert "Root:" in "\n".join(lines)
+
+
+def test_prune_main_accepts_explicit_root_without_chdir(make_collection_factory, monkeypatch, tmp_path):
+    collection = make_collection_factory()
+    backup = write_backup(collection.system_dir("nes"), "20200101_000000")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    lines = []
+
+    code = delete_gamelist_backups.main(
+        ["--system", "nes"],
+        root=collection.root,
+        output=lines.append,
+    )
+
+    assert code == 0
+    assert Path.cwd() == elsewhere
+    assert not backup.exists()
+    assert "DELETED" in "\n".join(lines)
 
 
 def test_catalog_fileinfo_field_two_is_preserved(make_collection_factory):

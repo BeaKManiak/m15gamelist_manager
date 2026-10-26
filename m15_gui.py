@@ -502,8 +502,10 @@ class App:
             "\n=== restore_gamelist %s ===\n$ restore_gamelist.py %s\n"
             % ("(dry run)" if dry_run else "(restore)", " ".join(args) or "(all)")
         )
-        self.run_in_thread(
-            restore_gamelist.main, args, root,
+        self.run_direct(
+            lambda writer: restore_gamelist.main(
+                args, root=root, output=writer.write
+            ),
             "Restoring..." if not dry_run else "Previewing restore...",
             preview=dry_run,
         )
@@ -532,8 +534,10 @@ class App:
             "\n=== delete_gamelist_backups %s ===\n$ delete_gamelist_backups.py %s\n"
             % ("(dry run)" if dry_run else "(delete)", " ".join(args) or "(all)")
         )
-        self.run_in_thread(
-            delete_gamelist_backups.main, args, root,
+        self.run_direct(
+            lambda writer: delete_gamelist_backups.main(
+                args, root=root, output=writer.write
+            ),
             "Deleting backups..." if not dry_run else "Listing backups...",
             preview=dry_run,
         )
@@ -561,46 +565,6 @@ class App:
             traceback.print_exc(file=writer)
             code = 1
         finally:
-            self.events.put(("done", code))
-
-    def run_in_thread(self, func, args, cwd, label, preview=False):
-        if self.busy:
-            return
-        self.preview = preview
-        self.set_busy(True, label)
-        worker = threading.Thread(
-            target=self._worker, args=(func, args, cwd), daemon=True
-        )
-        worker.start()
-        self.root.after(80, self.poll)
-
-    def _worker(self, func, args, cwd):
-        writer = QueueWriter(self.events)
-        saved_argv = sys.argv
-        saved_cwd = os.getcwd()
-        saved_stdout, saved_stderr = sys.stdout, sys.stderr
-        code = 0
-        try:
-            sys.stdout = writer
-            sys.stderr = writer
-            sys.argv = [saved_argv[0] if saved_argv else "app"] + list(args)
-            os.chdir(cwd)
-            result = func()
-            if isinstance(result, int):
-                code = result
-        except SystemExit as exc:
-            code = exc.code if isinstance(exc.code, int) else 0
-        except Exception:
-            traceback.print_exc(file=writer)
-            code = 1
-        finally:
-            sys.stdout = saved_stdout
-            sys.stderr = saved_stderr
-            sys.argv = saved_argv
-            try:
-                os.chdir(saved_cwd)
-            except OSError:
-                pass
             self.events.put(("done", code))
 
     def poll(self):

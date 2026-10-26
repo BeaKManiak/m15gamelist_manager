@@ -43,12 +43,12 @@ def valid_xml(path: Path) -> bool:
         return False
 
 
-def find_latest_valid_backup(system_dir: Path):
+def find_latest_valid_backup(system_dir: Path, *, output=print):
     """Return the newest valid timestamped backup, or None."""
     try:
         entries = list(system_dir.iterdir())
     except OSError as exc:
-        print(f"ERROR: Cannot read directory {system_dir}: {exc}")
+        output(f"ERROR: Cannot read directory {system_dir}: {exc}")
         return None
 
     candidates = []
@@ -81,7 +81,7 @@ def find_latest_valid_backup(system_dir: Path):
         if valid_xml(path):
             return path
 
-        print(f"WARNING: Skipping invalid XML backup: {path.name}")
+        output(f"WARNING: Skipping invalid XML backup: {path.name}")
 
     return None
 
@@ -105,32 +105,32 @@ def make_recovery_backup(current_file: Path) -> Path:
     return destination
 
 
-def restore_system(system_dir: Path, dry_run: bool) -> bool:
+def restore_system(system_dir: Path, dry_run: bool, *, output=print) -> bool:
     """Restore one system directory. Return whether it was processed."""
     if not system_dir.is_dir():
-        print(f"ERROR: System directory does not exist: {system_dir}")
+        output(f"ERROR: System directory does not exist: {system_dir}")
         return False
 
     current_file = system_dir / "gamelist.xml"
-    backup = find_latest_valid_backup(system_dir)
+    backup = find_latest_valid_backup(system_dir, output=output)
 
     if backup is None:
-        print(f"\nSKIP: No valid timestamped backup in {system_dir.name}")
+        output(f"\nSKIP: No valid timestamped backup in {system_dir.name}")
         return False
 
-    print(f"\nSystem: {system_dir.name}")
-    print(f"  Selected backup: {backup.name}")
+    output(f"\nSystem: {system_dir.name}")
+    output(f"  Selected backup: {backup.name}")
 
     if not valid_xml(backup):
-        print("ERROR: Backup failed XML validation.")
+        output("ERROR: Backup failed XML validation.")
         return False
 
     if dry_run:
-        print("  DRY RUN: No files changed.")
+        output("  DRY RUN: No files changed.")
         if current_file.exists():
-            print("  Current gamelist.xml would be preserved before restore.")
+            output("  Current gamelist.xml would be preserved before restore.")
         else:
-            print("  gamelist.xml would be created from the selected backup.")
+            output("  gamelist.xml would be created from the selected backup.")
         return True
 
     safety_backup = None
@@ -139,41 +139,41 @@ def restore_system(system_dir: Path, dry_run: bool) -> bool:
         # Preserve the current file before replacing it.
         if current_file.exists():
             safety_backup = make_recovery_backup(current_file)
-            print(f"  Safety backup: {safety_backup.name}")
+            output(f"  Safety backup: {safety_backup.name}")
 
         # Copy, rather than move, so the source backup remains intact.
         shutil.copy2(backup, current_file)
 
         # Verify the copied file.
         if not valid_xml(current_file):
-            print("ERROR: Restored file failed XML validation.")
+            output("ERROR: Restored file failed XML validation.")
 
             # Attempt to roll back if an existing file was preserved.
             if safety_backup is not None:
                 shutil.copy2(safety_backup, current_file)
-                print("  Previous gamelist.xml has been restored from safety backup.")
+                output("  Previous gamelist.xml has been restored from safety backup.")
 
             return False
 
-        print("  RESTORED successfully.")
+        output("  RESTORED successfully.")
         return True
 
     except OSError as exc:
-        print(f"ERROR: Restore failed for {system_dir.name}: {exc}")
+        output(f"ERROR: Restore failed for {system_dir.name}: {exc}")
 
         # If possible, restore the original file after a failed copy.
         if safety_backup is not None:
             try:
                 shutil.copy2(safety_backup, current_file)
-                print("  Previous gamelist.xml restored from safety backup.")
+                output("  Previous gamelist.xml restored from safety backup.")
             except OSError as rollback_exc:
-                print(f"CRITICAL: Rollback failed: {rollback_exc}")
-                print(f"  Safety backup remains at: {safety_backup}")
+                output(f"CRITICAL: Rollback failed: {rollback_exc}")
+                output(f"  Safety backup remains at: {safety_backup}")
 
         return False
 
 
-def main() -> int:
+def main(argv=None, root=None, *, output=print) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Restore gamelist.xml from the newest valid timestamped backup. "
@@ -198,10 +198,11 @@ def main() -> int:
         help="Preview the selected recoveries without changing files.",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    # Like updatelists, use the current working directory as the root.
-    root = Path.cwd().resolve()
+    # Like updatelists, use the current working directory unless a root is given.
+    root_path = Path.cwd().resolve() if root is None else Path(root).expanduser().resolve()
+    root = root_path
 
     if args.system:
         # Accept a folder name, not a path outside the root.
@@ -232,27 +233,27 @@ def main() -> int:
                 path for path in root.iterdir() if path.is_dir()
             )
         except OSError as exc:
-            print(f"ERROR: Cannot read root directory {root}: {exc}")
+            output(f"ERROR: Cannot read root directory {root}: {exc}")
             return 2
 
     if not system_dirs:
-        print(f"No system directories found under {root}")
+        output(f"No system directories found under {root}")
         return 1
 
     mode = "DRY RUN — no files will be changed" if args.dry_run else "RECOVERY"
-    print(f"Root: {root}")
-    print(f"Mode: {mode}")
-    print(f"Systems to inspect: {len(system_dirs)}")
+    output(f"Root: {root}")
+    output(f"Mode: {mode}")
+    output(f"Systems to inspect: {len(system_dirs)}")
 
     successes = 0
     for system_dir in system_dirs:
-        if restore_system(system_dir, args.dry_run):
+        if restore_system(system_dir, args.dry_run, output=output):
             successes += 1
 
-    print(f"\nFinished: {successes}/{len(system_dirs)} system(s) processed.")
+    output(f"\nFinished: {successes}/{len(system_dirs)} system(s) processed.")
 
     if args.dry_run:
-        print("Preview only. Run without --dry-run to perform recovery.")
+        output("Preview only. Run without --dry-run to perform recovery.")
 
     return 0 if successes == len(system_dirs) else 1
 
