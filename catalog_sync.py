@@ -171,6 +171,8 @@ def _member_bytes(games, member, language, old_titles):
             g["image"],
         )
         lines.append("\t".join(fields))
+    if not lines:
+        return b""
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
