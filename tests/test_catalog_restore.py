@@ -338,6 +338,76 @@ def test_prune_main_accepts_explicit_root_without_chdir(make_collection_factory,
     assert "DELETED" in "\n".join(lines)
 
 
+def test_sync_catalog_second_call_is_noop(make_collection_factory):
+    collection = make_collection_factory(
+        games={"nes": [make_game({"gameid": "1", "path": "./foo.zip"})]}
+    )
+    first = catalog_sync.sync_catalog(
+        collection.root,
+        collection.root_dat,
+        collection.fileinfo,
+        system_names=list(gamelist_manager.SYSTEMS),
+    )
+    assert first["unchanged"] is False
+    before = snapshot_tree(collection.root)
+    before[".catalog"] = (0, 0, "")
+    for path in collection.catalog_dir.iterdir():
+        before[f"catalog/{path.name}"] = (
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+            path.read_bytes().hex(),
+        )
+
+    second = catalog_sync.sync_catalog(
+        collection.root,
+        collection.root_dat,
+        collection.fileinfo,
+        system_names=list(gamelist_manager.SYSTEMS),
+    )
+
+    assert second["unchanged"] is True
+    after = snapshot_tree(collection.root)
+    after[".catalog"] = (0, 0, "")
+    for path in collection.catalog_dir.iterdir():
+        after[f"catalog/{path.name}"] = (
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+            path.read_bytes().hex(),
+        )
+    assert after == before
+
+
+def test_sync_catalog_changed_content_writes_again(make_collection_factory):
+    collection = make_collection_factory(
+        games={"nes": [make_game({"gameid": "1", "path": "./foo.zip"})]}
+    )
+    catalog_sync.sync_catalog(
+        collection.root,
+        collection.root_dat,
+        collection.fileinfo,
+        system_names=list(gamelist_manager.SYSTEMS),
+    )
+    write_gamelist(
+        collection.gamelist("nes"),
+        [
+            make_game({"gameid": "1", "path": "./foo.zip"}),
+            make_game({"gameid": "2", "path": "./bar.zip", "name": "Bar"}),
+        ],
+    )
+    backup_count = len(list(collection.root.glob("root.dat.*.bak")))
+
+    summary = catalog_sync.sync_catalog(
+        collection.root,
+        collection.root_dat,
+        collection.fileinfo,
+        system_names=list(gamelist_manager.SYSTEMS),
+    )
+
+    assert summary["unchanged"] is False
+    assert summary["games"] == 2
+    assert len(list(collection.root.glob("root.dat.*.bak"))) == backup_count + 1
+
+
 def test_catalog_fileinfo_field_two_is_preserved(make_collection_factory):
     collection = make_collection_factory(
         games={"nes": [make_game({"gameid": "1", "path": "./foo.zip"})]},

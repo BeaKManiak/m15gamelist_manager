@@ -425,20 +425,30 @@ def test_empty_collection_catalog_sync(make_collection_factory, monkeypatch):
     assert read_fileinfo(collection.fileinfo)[0] == 0
 
 
-def test_roundtrip_still_writes_catalog(make_collection_factory, monkeypatch):
+def test_roundtrip_writes_xml_and_skips_unchanged_catalog(
+    make_collection_factory, monkeypatch, capsys
+):
     collection = make_collection_factory()
     before = collection.gamelist("nes").read_bytes()
+    catalog_before = (
+        collection.root_dat.read_bytes(),
+        collection.fileinfo.read_bytes(),
+    )
 
     code = run_main(monkeypatch, "--root", str(collection.root), "--roundtrip")
 
     assert code == 0
     assert collection.gamelist("nes").read_bytes() == before
     assert len(backup_names(collection.system_dir("nes"))) == 1
-    assert list(collection.root.glob("root.dat.*.bak"))
-    assert list(collection.catalog_dir.glob("fileinfo.*.bak"))
+    assert list(collection.root.glob("root.dat.*.bak")) == []
+    assert list(collection.catalog_dir.glob("fileinfo.*.bak")) == []
+    assert (
+        collection.root_dat.read_bytes(),
+        collection.fileinfo.read_bytes(),
+    ) == catalog_before
+    assert "Catalog unchanged" in capsys.readouterr().out
 
 
-@pytest.mark.xfail(strict=True, reason="catalog no-op write is implemented in T11b")
 def test_second_apply_is_idempotent(make_collection_factory, monkeypatch):
     collection = make_collection_factory(rom_files={"nes": ["Mario.zip"]})
     assert run_main(monkeypatch, "--root", str(collection.root), "--system", "nes") == 0

@@ -264,14 +264,28 @@ def sync_catalog(root_folder, root_dat, fileinfo_path, system_names, dry_run=Fal
                 raise ValueError(f"Generated row count mismatch for {member}")
     new_info = ",".join(count_fields).encode("ascii")
 
+    unchanged = False
+    with zipfile.ZipFile(root_dat, "r") as existing:
+        existing_names = existing.namelist()
+        if (
+            existing_names == list(MEMBER_LANGUAGES)
+            and all(
+                existing.read(name) == members[name]
+                for name in MEMBER_LANGUAGES
+            )
+            and fileinfo_path.read_bytes() == new_info
+        ):
+            unchanged = True
+
     summary = {
         "games": len(games),
         "system_counts": dict(counts),
         "root_dat": str(root_dat),
         "fileinfo": str(fileinfo_path),
         "dry_run": dry_run,
+        "unchanged": unchanged,
     }
-    if dry_run:
+    if dry_run or unchanged:
         return summary
 
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

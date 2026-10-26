@@ -942,8 +942,11 @@ def run_catalog_sync(options, root_folder, *, output=print):
         )
         output("\nGLOBAL CATALOG SYNCHRONIZATION")
         output(f"  Games indexed: {summary['games']}")
-        output(f"  root.dat backup: {summary['root_dat_backup']}")
-        output(f"  fileinfo backup: {summary['fileinfo_backup']}")
+        if summary.get("unchanged"):
+            output("  Catalog unchanged; no files written.")
+        else:
+            output(f"  root.dat backup: {summary['root_dat_backup']}")
+            output(f"  fileinfo backup: {summary['fileinfo_backup']}")
         output("  Catalog validation: passed")
         return False, False, summary
     except Exception as exc:
