@@ -314,6 +314,10 @@ def sync_catalog(
         "fileinfo": str(fileinfo_path),
         "dry_run": dry_run,
         "unchanged": unchanged,
+        "root_dat_backup": None,
+        "fileinfo_backup": None,
+        "pruned": 0,
+        "prune_warnings": [],
     }
     if dry_run or unchanged:
         return summary
