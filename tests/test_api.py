@@ -24,6 +24,43 @@ def test_options_from_args_roundtrip_sets_every_switch():
     assert options.root == Path("/tmp").resolve()
 
 
+def test_parser_accepts_all_documented_flags():
+    parser = gamelist_manager.build_parser()
+    args = parser.parse_args([
+        "--root", "/tmp",
+        "--system", "nes",
+        "--dry-run",
+        "--delete-orphaned-images",
+        "--no-prompt",
+        "--root-dat", "/tmp/root.dat",
+        "--fileinfo", "/tmp/fileinfo",
+        "--skip-remove-missing",
+        "--skip-add",
+        "--skip-ids",
+        "--skip-normalize",
+        "--skip-sort",
+        "--dedup", "both",
+        "--no-indent",
+        "--xml-declaration", "double",
+        "--force-write",
+        "--keep-baks", "3",
+        "--roundtrip",
+    ])
+    options = gamelist_manager.options_from_args(args)
+
+    assert options.system == "nes"
+    assert options.dry_run
+    assert options.delete_orphaned_images
+    assert options.no_prompt
+    assert options.root_dat == Path("/tmp/root.dat")
+    assert options.fileinfo == Path("/tmp/fileinfo")
+    assert options.dedup == "none"  # roundtrip preset
+    assert options.force_write
+    assert options.indent is False
+    assert options.xml_declaration == "double"
+    assert options.keep_baks == 3
+
+
 def test_run_api_processes_without_argv(make_collection_factory):
     collection = make_collection_factory(
         games={
