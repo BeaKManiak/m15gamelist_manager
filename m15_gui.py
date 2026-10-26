@@ -469,6 +469,7 @@ class App:
             xml_declaration=self.decl_var.get(),
             force_write=self.force_var.get(),
             keep_baks=keep_baks,
+            show_spinner=False,
         )
 
     def _run_manager_job(self, options, writer):

@@ -152,6 +152,7 @@ def test_gui_option_mapping_matches_cli_flags():
     assert options.xml_declaration == "double"
     assert options.force_write is True
     assert options.keep_baks == 3
+    assert options.show_spinner is False
 
     preview = app.build_manager_options("/tmp/roms", dry_run=True)
     assert preview.delete_orphaned_images is False

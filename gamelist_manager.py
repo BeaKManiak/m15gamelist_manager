@@ -53,13 +53,23 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
 class Spinner:
-    def __init__(self, message):
+    def __init__(self, message, enabled=True):
         self.message = message
+        self.enabled = enabled
         self.stop_event = threading.Event()
         self.thread = None
+        self.stream = None
 
     def __enter__(self):
-        if sys.stdout.isatty():
+        if not self.enabled:
+            return self
+        stream = sys.stdout
+        try:
+            animate = stream is not None and stream.isatty()
+        except (AttributeError, ValueError):
+            animate = False
+        if animate:
+            self.stream = stream
             self.thread = threading.Thread(
                 target=self._animate, daemon=True
             )
@@ -70,18 +80,18 @@ class Spinner:
         frames = "|/-\\"
         i = 0
         while not self.stop_event.wait(0.12):
-            sys.stdout.write(
+            self.stream.write(
                 f"\r{self.message} {frames[i % len(frames)]}"
             )
-            sys.stdout.flush()
+            self.stream.flush()
             i += 1
 
     def __exit__(self, *args):
         self.stop_event.set()
         if self.thread:
             self.thread.join()
-            sys.stdout.write("\r" + " " * (len(self.message) + 8) + "\r")
-            sys.stdout.flush()
+            self.stream.write("\r" + " " * (len(self.message) + 8) + "\r")
+            self.stream.flush()
 
 
 def id_key(value):
@@ -129,9 +139,11 @@ def find_system_folder(root, name):
     return _find_system_folder(root, name, ignore_oserror=True)
 
 
-def scan_game_files(folder, extensions):
+def scan_game_files(folder, extensions, *, show_spinner=True):
     files = {}
-    with Spinner(f"Scanning {folder.name} ROM files"):
+    with Spinner(
+        f"Scanning {folder.name} ROM files", enabled=show_spinner
+    ):
         for path in folder.iterdir():
             if not path.is_file() or path.name.startswith("._"):
                 continue
@@ -255,7 +267,7 @@ def safe_write_xml(tree, xml_path, indent=True, declaration="et"):
                 pass
 
 
-def read_system_xmls(root_folder, system_names):
+def read_system_xmls(root_folder, system_names, *, show_spinner=True):
     records = {}
 
     for name in sorted(system_names, key=str.casefold):
@@ -279,7 +291,7 @@ def read_system_xmls(root_folder, system_names):
             continue
 
         try:
-            with Spinner(f"Reading {name} XML"):
+            with Spinner(f"Reading {name} XML", enabled=show_spinner):
                 tree = ET.parse(xml_path)
 
             root = tree.getroot()
@@ -479,6 +491,7 @@ class Options:
     xml_declaration: str = "et"
     force_write: bool = False
     keep_baks: int = 5
+    show_spinner: bool = True
 
 
 @dataclass
@@ -709,7 +722,11 @@ def transform_system(system_name, record, options, allocator):
     xml_changed = False
 
     try:
-        discovered = scan_game_files(folder, profile["extensions"])
+        discovered = scan_game_files(
+            folder,
+            profile["extensions"],
+            show_spinner=options.show_spinner,
+        )
     except OSError as exc:
         result["status"] = "ERROR"
         result["notes"].append(f"Could not scan game files: {exc}")
@@ -1025,12 +1042,20 @@ def collect_preflight_issues(records, transformed, options):
 def run(options: Options, *, output=print, ask=input) -> RunResult:
     root_folder = options.root
     if options.system is None:
-        records = read_system_xmls(root_folder, list(SYSTEMS))
+        records = read_system_xmls(
+            root_folder,
+            list(SYSTEMS),
+            show_spinner=options.show_spinner,
+        )
         pool_records = records
     else:
         # Build the ID pool and duplicate report globally, but only transform
         # the selected system. Catalog sync still rebuilds every system.
-        pool_records = read_system_xmls(root_folder, list(SYSTEMS))
+        pool_records = read_system_xmls(
+            root_folder,
+            list(SYSTEMS),
+            show_spinner=options.show_spinner,
+        )
         records = {options.system: pool_records[options.system]}
 
     existing_gameids, max_numeric_id, duplicates = collect_existing_ids(pool_records)

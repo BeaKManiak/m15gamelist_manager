@@ -8,6 +8,33 @@ import gamelist_manager
 from conftest import make_game, snapshot_tree, write_gamelist
 
 
+def test_spinner_handles_missing_stdout(monkeypatch):
+    monkeypatch.setattr(gamelist_manager.sys, "stdout", None)
+    with gamelist_manager.Spinner("Working") as spinner:
+        assert spinner.thread is None
+
+
+def test_spinner_can_be_disabled(monkeypatch):
+    class FakeStream:
+        def __init__(self):
+            self.writes = []
+
+        def isatty(self):
+            return True
+
+        def write(self, text):
+            self.writes.append(text)
+
+        def flush(self):
+            pass
+
+    stream = FakeStream()
+    monkeypatch.setattr(gamelist_manager.sys, "stdout", stream)
+    with gamelist_manager.Spinner("Working", enabled=False) as spinner:
+        assert spinner.thread is None
+    assert stream.writes == []
+
+
 def test_id_allocator_skips_used_numeric_and_text_ids():
     allocator = gamelist_manager.IdAllocator(
         {
