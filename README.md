@@ -541,8 +541,10 @@ To remove these warnings entirely, add a Developer ID certificate and notarize
 
 - `.github/workflows/ci.yml` runs pytest and ruff on Python 3.9 and 3.14 for
   every push and pull request.
-- `.github/workflows/build-app.yml` builds on `macos-15` (Apple Silicon) and
-  `windows-2025`, using Python 3.13 with Tkinter.
+- `.github/workflows/build-app.yml` also runs the tests and lint before building;
+  a failing test blocks the release.
+- The release build uses pinned PyInstaller 6.22.3, `macos-15` (Apple Silicon),
+  and `windows-2025` with Python 3.13 and Tkinter.
 - Intel macOS builds are not produced; GitHub retired the `macos-13` image.
 - Keep ROM files out of the repository; only the scripts need to be committed,
   otherwise every CI run clones the whole collection.
