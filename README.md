@@ -511,9 +511,16 @@ Tests use temporary fixture collections and do not touch the real ROM library.
 
 ### Build via GitHub Actions
 
-Push the repo and open **Actions → Build desktop app → Run workflow**. The
-workflow also runs automatically when you push a `v*` tag, and in that case
-attaches the builds to a GitHub Release.
+Open **Actions → Build / release desktop app → Run workflow**. There are three
+modes:
+
+- **Build only (default):** leave “Publish a GitHub Release” unchecked. The app
+  is built and uploaded as workflow artifacts; no tag is created and no version
+  is bumped.
+- **Build + release:** check “Publish a GitHub Release”. The workflow bumps the
+  latest `vX.Y.Z` tag, or uses the exact `tag_override` you provide.
+- **Tag push:** pushing a tag such as `v1.2.3` builds and publishes that exact
+  version. Tags containing a suffix like `v1.2.3-rc1` are marked as pre-releases.
 
 It produces, for each platform:
 
@@ -521,6 +528,10 @@ It produces, for each platform:
 |---|---|
 | `M15Manager-ARM64.zip` | macOS, Apple Silicon |
 | `M15Manager-windows.zip` | Windows |
+| `SHA256SUMS.txt` | Checksums for both zips (release only) |
+
+Artifacts from a build-only run are available under the workflow run and expire
+according to the repository’s artifact retention setting.
 
 ### First-launch notes (unsigned apps)
 
@@ -539,12 +550,15 @@ To remove these warnings entirely, add a Developer ID certificate and notarize
 
 ### CI notes
 
-- `.github/workflows/ci.yml` runs pytest and ruff on Python 3.9 and 3.14 for
-  every push and pull request.
-- `.github/workflows/build-app.yml` also runs the tests and lint before building;
-  a failing test blocks the release.
+- `.github/workflows/ci.yml` runs pytest and ruff on Python 3.9, 3.13, and 3.14
+  for every push and pull request.
+- `.github/workflows/build-app.yml` also runs the tests and lint on Python 3.13
+  before building; a failing test blocks the release.
 - The release build uses pinned PyInstaller 6.22.3, `macos-15` (Apple Silicon),
   and `windows-2025` with Python 3.13 and Tkinter.
+- The macOS app is ad-hoc signed and verified; signing failure fails the build.
+- Releases are serialized with a concurrency group, and manual release tags are
+  checked for semver format and collisions.
 - Intel macOS builds are not produced; GitHub retired the `macos-13` image.
 - Keep ROM files out of the repository; only the scripts need to be committed,
   otherwise every CI run clones the whole collection.

@@ -1,21 +1,25 @@
-name: Build desktop app
+name: Build / release desktop app
 
-# Run manually from the Actions tab (builds, then tags + publishes a release),
-# or automatically when you push a tag like "v1.0" (builds and releases that
-# exact tag). Manual runs auto-increment the newest vMAJOR.MINOR.PATCH tag
-# unless you override it or choose a minor/major bump.
+# Three modes:
+#   1. Manual run with "Publish a GitHub Release" unchecked (default):
+#      build and upload artifacts only. No tag, no version bump, no release.
+#   2. Manual run with publishing enabled:
+#      build, create the resolved vX.Y.Z tag, and publish a GitHub Release.
+#   3. Push a tag like v1.2.3:
+#      build and publish that exact tag.
 #
-# To also build on every push to main (build only, no release), uncomment the
-# "branches" block.
+# Manual runs auto-increment the newest vMAJOR.MINOR.PATCH tag unless
+# tag_override is set. Pre-release tags are published as pre-releases.
+
 on:
   workflow_dispatch:
     inputs:
-      release:
-        description: "Create a tag and GitHub Release after a successful build"
+      publish:
+        description: "Publish a GitHub Release after a successful build"
         type: boolean
-        default: true
+        default: false
       bump:
-        description: "Which version part to increment (ignored if tag_override is set)"
+        description: "Version bump to use when publishing (ignored if tag_override is set)"
         type: choice
         options:
           - patch
@@ -23,22 +27,25 @@ on:
           - major
         default: patch
       tag_override:
-        description: "Exact tag to use instead of auto-incrementing, e.g. v2.0.0"
+        description: "Exact version tag to publish, e.g. v2.0.0 (optional)"
         type: string
         required: false
   push:
     tags:
-      - "v*"
-    # branches:
-    #   - main
+      - "v[0-9]*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: desktop-app-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   test:
     name: Test and lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -46,7 +53,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.14"
+          python-version: "3.13"
 
       - name: Install dev dependencies
         run: |
@@ -62,8 +69,10 @@ jobs:
   prepare:
     name: Resolve release tag
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -75,22 +84,30 @@ jobs:
         env:
           BUMP: ${{ inputs.bump }}
           OVERRIDE: ${{ inputs.tag_override }}
-          DO_RELEASE: ${{ inputs.release }}
+          DO_PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
           tag=""
+          prerelease="false"
 
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            # Tag push: release exactly the tag that was pushed.
+            # Tag push: publish exactly the tag that was pushed.
             tag="${GITHUB_REF_NAME:-${GITHUB_REF#refs/tags/}}"
           elif [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then
             # Branch push: build only.
             tag=""
-          elif [[ "${DO_RELEASE}" != "true" ]]; then
-            # Manual run with release disabled: build only.
+          elif [[ "${DO_PUBLISH}" != "true" ]]; then
+            # Manual run with publishing disabled: build only.
             tag=""
           elif [[ -n "${OVERRIDE}" ]]; then
-            # Manual run with an explicit tag.
+            if [[ ! "${OVERRIDE}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::tag_override must look like v1.2.3 or v1.2.3-rc1"
+              exit 1
+            fi
+            if git rev-parse --verify --quiet "refs/tags/${OVERRIDE}" >/dev/null; then
+              echo "::error::Tag ${OVERRIDE} already exists"
+              exit 1
+            fi
             tag="${OVERRIDE}"
           else
             # Manual run: bump the newest vX.Y.Z tag (pre-releases ignored).
@@ -107,12 +124,34 @@ jobs:
             tag="v${major}.${minor}.${patch}"
           fi
 
+          case "${tag}" in
+            *-*) prerelease="true" ;;
+          esac
+
           echo "Resolved tag: '${tag:-<none: build only>}'"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize mode
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          if [[ -n "${TAG}" ]]; then
+            if [[ "${PRERELEASE}" == "true" ]]; then
+              echo "### Will publish pre-release ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "### Will publish ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "### Build only" >> "$GITHUB_STEP_SUMMARY"
+            echo "No tag will be created and no GitHub Release will be published." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   build:
     name: Build on ${{ matrix.os }}
     needs: [prepare, test]
+    timeout-minutes: 30
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -151,7 +190,8 @@ jobs:
             m15_gui.py
           # Ad-hoc signature: removes "damaged app" errors for most users.
           # Real distribution needs an Apple Developer ID + notarization.
-          codesign --force --deep --sign - "dist/M15Manager.app" || true
+          codesign --force --deep --sign - "dist/M15Manager.app"
+          codesign --verify --deep --strict --verbose=2 "dist/M15Manager.app"
           ditto -c -k --sequesterRsrc --keepParent \
             "dist/M15Manager.app" "dist/M15Manager-${{ runner.arch }}.zip"
 
@@ -177,6 +217,9 @@ jobs:
     needs: [prepare, build]
     if: needs.prepare.outputs.tag != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v8
@@ -184,11 +227,20 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       - name: Tag and publish the release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ${{ needs.prepare.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          files: artifacts/*.zip
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          files: |
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt
           generate_release_notes: true
