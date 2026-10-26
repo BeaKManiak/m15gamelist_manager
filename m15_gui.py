@@ -559,6 +559,8 @@ class App:
             result = func(writer)
             if isinstance(result, int):
                 code = result
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 1
         except Exception:
             traceback.print_exc(file=writer)
             code = 1
