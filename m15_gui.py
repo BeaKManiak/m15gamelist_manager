@@ -416,10 +416,38 @@ class App:
             "\n=== gamelist_manager %s ===\n$ gamelist_manager.py %s\n"
             % ("(dry run)" if dry_run else "(apply)", " ".join(args))
         )
+        options = self.build_manager_options(root, dry_run)
         label = "Applying changes..." if not dry_run else "Previewing..."
-        self.run_in_thread(
-            gamelist_manager.main, args, root, label, preview=dry_run
+        self.run_direct(
+            lambda writer: self._run_manager_job(options, writer),
+            label,
+            preview=dry_run,
         )
+
+    def build_manager_options(self, root, dry_run):
+        system = self.selected_system()
+        delete_orphans = self.orphans_var.get() and not dry_run
+        return gamelist_manager.Options(
+            root=Path(root),
+            system=system,
+            dry_run=dry_run,
+            delete_orphaned_images=delete_orphans,
+            no_prompt=not delete_orphans,
+            skip_remove_missing=not self.remove_missing_var.get(),
+            skip_add=not self.add_var.get(),
+            skip_ids=not self.ids_var.get(),
+            skip_normalize=not self.normalize_var.get(),
+            skip_sort=not self.sort_var.get(),
+            dedup=self.dedup_var.get(),
+            indent=self.indent_var.get(),
+            xml_declaration=self.decl_var.get(),
+            force_write=self.force_var.get(),
+        )
+
+    def _run_manager_job(self, options, writer):
+        result = gamelist_manager.run(options, output=writer.write)
+        gamelist_manager.print_report(result, output=writer.write)
+        return result.exit_code
 
     def build_manager_args(self, root, dry_run):
         args = ["--root", root]
@@ -509,6 +537,31 @@ class App:
             "Deleting backups..." if not dry_run else "Listing backups...",
             preview=dry_run,
         )
+
+    def run_direct(self, func, label, preview=False):
+        """Run a callable that receives a writer and returns an exit code."""
+        if self.busy:
+            return
+        self.preview = preview
+        self.set_busy(True, label)
+        worker = threading.Thread(
+            target=self._direct_worker, args=(func,), daemon=True
+        )
+        worker.start()
+        self.root.after(80, self.poll)
+
+    def _direct_worker(self, func):
+        writer = QueueWriter(self.events)
+        code = 0
+        try:
+            result = func(writer)
+            if isinstance(result, int):
+                code = result
+        except Exception:
+            traceback.print_exc(file=writer)
+            code = 1
+        finally:
+            self.events.put(("done", code))
 
     def run_in_thread(self, func, args, cwd, label, preview=False):
         if self.busy:
