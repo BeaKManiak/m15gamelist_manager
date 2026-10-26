@@ -347,6 +347,47 @@ def test_no_indent(make_collection_factory, monkeypatch):
     assert b"\n  <" not in collection.gamelist("nes").read_bytes()
 
 
+def test_safe_write_matches_elementtree_serialization(tmp_path):
+    def make_tree():
+        root = ET.Element("gameList")
+        entry = ET.SubElement(root, "game")
+        ET.SubElement(entry, "name").text = "Foo"
+        return ET.ElementTree(root)
+
+    xml_path = tmp_path / "gamelist.xml"
+    gamelist_manager.safe_write_xml(make_tree(), xml_path, indent=True)
+    expected_tree = make_tree()
+    ET.indent(expected_tree, space="  ")
+    expected = ET.tostring(
+        expected_tree.getroot(), encoding="utf-8", xml_declaration=True
+    )
+    assert xml_path.read_bytes() == expected
+    assert list(tmp_path.glob("*.tmp")) == []
+
+    double_path = tmp_path / "double.xml"
+    gamelist_manager.safe_write_xml(
+        make_tree(), double_path, indent=True, declaration="double"
+    )
+    body = ET.tostring(
+        expected_tree.getroot(), encoding="utf-8", xml_declaration=False
+    )
+    assert double_path.read_bytes() == (
+        b'<?xml version="1.0" encoding="utf-8"?>\n' + body
+    )
+
+
+def test_safe_write_preserves_bom_bytes(tmp_path):
+    xml_path = tmp_path / "gamelist.xml"
+    xml_path.write_bytes(b"\xef\xbb\xbf<?xml version='1.0' encoding='utf-8'?>\n<gameList />")
+    tree = ET.ElementTree(ET.Element("gameList"))
+
+    gamelist_manager.safe_write_xml(tree, xml_path, indent=True)
+
+    data = xml_path.read_bytes()
+    assert data.startswith(b"\xef\xbb\xbf")
+    assert data.count(b"\xef\xbb\xbf") == 1
+
+
 def test_safe_write_rolls_back_when_installed_file_fails_validation(tmp_path, monkeypatch):
     xml_path = tmp_path / "gamelist.xml"
     original = b"<?xml version='1.0' encoding='utf-8'?>\n<gameList />"

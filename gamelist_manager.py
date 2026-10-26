@@ -211,18 +211,23 @@ def safe_write_xml(tree, xml_path, indent=True, declaration="et"):
             ET.indent(tree, space="  ")
 
         if declaration == "double":
-            tree.write(temp_path, encoding="utf-8", xml_declaration=False)
-            body = temp_path.read_bytes()
-            temp_path.write_bytes(
-                b'<?xml version="1.0" encoding="utf-8"?>\n' + body
+            body = ET.tostring(
+                tree.getroot(),
+                encoding="utf-8",
+                xml_declaration=False,
             )
+            data = b'<?xml version="1.0" encoding="utf-8"?>\n' + body
         else:
-            tree.write(temp_path, encoding="utf-8", xml_declaration=True)
+            data = ET.tostring(
+                tree.getroot(),
+                encoding="utf-8",
+                xml_declaration=True,
+            )
 
         if had_bom:
-            temp_path.write_bytes(
-                b"\xef\xbb\xbf" + temp_path.read_bytes()
-            )
+            data = b"\xef\xbb\xbf" + data
+
+        temp_path.write_bytes(data)
 
         ET.parse(temp_path)
 
