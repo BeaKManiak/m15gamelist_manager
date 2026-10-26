@@ -597,11 +597,25 @@ def options_from_args(args) -> Options:
     )
 
 
-def run(options: Options, *, output=print, ask=input) -> RunResult:
-    root_folder = options.root
-    system_names = list(SYSTEMS) if options.system is None else [options.system]
-    records = read_system_xmls(root_folder, system_names)
+def new_system_result(system_name, record):
+    return {
+        "system": system_name,
+        "status": record.get("status", "ERROR"),
+        "added": [],
+        "removed": [],
+        "deduplicated": [],
+        "normalized": [],
+        "ids_added": [],
+        "id_conflicts": [],
+        "orphans": [],
+        "deleted": [],
+        "backup": None,
+        "notes": list(record.get("notes", [])),
+        "sorted": False,
+    }
 
+
+def collect_existing_ids(records):
     existing_gameids = defaultdict(list)
     max_numeric_id = 0
 
@@ -635,256 +649,306 @@ def run(options: Options, *, output=print, ask=input) -> RunResult:
         if len(occurrences) > 1
     ]
     duplicates.sort(key=lambda pair: str(pair[0]))
+    return existing_gameids, max_numeric_id, duplicates
 
-    used_ids = set(existing_gameids.keys())
-    next_id = max_numeric_id + 1
 
-    def allocate_id():
-        nonlocal next_id
-        while id_key(str(next_id)) in used_ids:
-            next_id += 1
-        value = str(next_id)
-        used_ids.add(id_key(value))
-        next_id += 1
+class IdAllocator:
+    def __init__(self, existing_gameids, max_numeric_id):
+        self.used_ids = set(existing_gameids)
+        self.next_id = max_numeric_id + 1
+
+    def reuse(self, key):
+        if key is not None:
+            self.used_ids.add(key)
+
+    def allocate(self):
+        while id_key(str(self.next_id)) in self.used_ids:
+            self.next_id += 1
+        value = str(self.next_id)
+        self.used_ids.add(id_key(value))
+        self.next_id += 1
         return value
 
-    results = {}
 
-    for system_name in sorted(records, key=str.casefold):
-        record = records[system_name]
-        result = {
-            "system": system_name,
-            "status": record.get("status", "ERROR"),
-            "added": [],
-            "removed": [],
-            "deduplicated": [],
-            "normalized": [],
-            "ids_added": [],
-            "id_conflicts": [],
-            "orphans": [],
-            "deleted": [],
-            "backup": None,
-            "notes": list(record.get("notes", [])),
-            "sorted": False,
-        }
-        results[system_name] = result
+def process_system(
+    system_name,
+    record,
+    options,
+    allocator,
+    *,
+    output=print,
+    ask=input,
+):
+    result = new_system_result(system_name, record)
 
-        if record.get("status") != "OK":
+    if record.get("status") != "OK":
+        return result
+
+    folder = record["folder"]
+    xml_path = record["xml_path"]
+    tree = record["tree"]
+    root = record["root"]
+    profile = SYSTEMS[system_name]
+    xml_changed = False
+
+    try:
+        discovered = scan_game_files(folder, profile["extensions"])
+    except OSError as exc:
+        result["status"] = "ERROR"
+        result["notes"].append(f"Could not scan game files: {exc}")
+        return result
+
+    retained = []
+    known_files = set()
+
+    for entry in list(root):
+        if local_tag(entry) != "game":
             continue
 
-        folder = record["folder"]
-        xml_path = record["xml_path"]
-        tree = record["tree"]
-        root = record["root"]
-        profile = SYSTEMS[system_name]
-        xml_changed = False
-
-        try:
-            discovered = scan_game_files(folder, profile["extensions"])
-        except OSError as exc:
-            result["status"] = "ERROR"
-            result["notes"].append(f"Could not scan game files: {exc}")
-            continue
-
-        retained = []
-        known_files = set()
-
-        for entry in list(root):
-            if local_tag(entry) != "game":
-                continue
-
-            raw_path = get_text(entry, "path")
-            if not raw_path:
-                retained.append(entry)
-                result["notes"].append(
-                    "Kept an existing game entry without <path>."
-                )
-                continue
-
-            resolved = resolve_game_path(folder, raw_path)
-            rom_exists = resolved.is_file()
-
-            if not rom_exists:
-                if not options.skip_remove_missing:
-                    result["removed"].append(raw_path)
-                    xml_changed = True
-                    continue
-                result["notes"].append(
-                    f"Kept entry with missing ROM: {raw_path}"
-                )
-
+        raw_path = get_text(entry, "path")
+        if not raw_path:
             retained.append(entry)
-            if rom_exists:
-                known_files.add(resolved.name.casefold())
-
-            if not options.skip_ids:
-                existing_gameid = get_text(entry, "gameid")
-                existing_id = get_text(entry, "id")
-
-                if not existing_gameid:
-                    old_id_key = id_key(existing_id)
-
-                    if (
-                        existing_id
-                        and old_id_key is not None
-                        and old_id_key not in used_ids
-                    ):
-                        new_gameid = existing_id
-                        used_ids.add(old_id_key)
-                    else:
-                        new_gameid = allocate_id()
-                        if existing_id:
-                            result["id_conflicts"].append(
-                                f"{raw_path}: existing <id>{existing_id}</id> "
-                                f"was not safe to reuse; assigned "
-                                f"<gameid>{new_gameid}</gameid>."
-                            )
-
-                    set_child_text(entry, "gameid", new_gameid)
-                    result["ids_added"].append(
-                        f"{raw_path} -> {new_gameid}"
-                    )
-                    xml_changed = True
-
-            if not options.skip_normalize:
-                changed_languages = normalize_language_fields(entry)
-                if changed_languages:
-                    result["normalized"].append(
-                        f"{raw_path} ({', '.join(changed_languages)})"
-                    )
-                    xml_changed = True
-
-        replace_game_children(root, retained)
-
-        if not options.skip_add:
-            for _, game_file in discovered.items():
-                if game_file.name.casefold() in known_files:
-                    continue
-
-                new_gameid = allocate_id()
-                root.append(make_entry(game_file.name, new_gameid, profile))
-                result["added"].append(game_file.name)
-                known_files.add(game_file.name.casefold())
-                xml_changed = True
-
-        dedup_removals = deduplicate_games(root, system_name, options.dedup)
-        if dedup_removals:
-            result["deduplicated"].extend(dedup_removals)
-            xml_changed = True
-
-        referenced_images = set()
-        for entry in root:
-            if local_tag(entry) != "game":
-                continue
-
-            image_value = get_text(entry, "image")
-            if image_value:
-                referenced_images.add(
-                    Path(image_value.replace("\\", "/")).name.casefold()
-                )
-
-        image_folder = folder / "images"
-        if image_folder.is_dir():
-            try:
-                result["orphans"] = sorted(
-                    [
-                        path for path in image_folder.iterdir()
-                        if path.is_file()
-                        and path.suffix.lower() in IMAGE_EXTENSIONS
-                        and path.name.casefold() not in referenced_images
-                    ],
-                    key=lambda path: path.name.casefold(),
-                )
-            except OSError as exc:
-                result["notes"].append(f"Could not scan images: {exc}")
-
-        if not options.skip_sort:
-            if sort_games_alphabetically(root):
-                result["sorted"] = True
-                result["notes"].append(
-                    "Game entries sorted alphabetically by <name>."
-                )
-                xml_changed = True
-
-        if options.dry_run:
-            result["notes"].append("Dry-run: no files changed.")
+            result["notes"].append(
+                "Kept an existing game entry without <path>."
+            )
             continue
 
-        if xml_changed or options.force_write:
-            try:
-                result["backup"] = safe_write_xml(
-                    tree, xml_path,
-                    indent=options.indent,
-                    declaration=options.xml_declaration,
-                )
-            except Exception as exc:
-                result["status"] = "ERROR"
-                result["notes"].append(f"XML replacement failed: {exc}")
+        resolved = resolve_game_path(folder, raw_path)
+        rom_exists = resolved.is_file()
+
+        if not rom_exists:
+            if not options.skip_remove_missing:
+                result["removed"].append(raw_path)
+                xml_changed = True
                 continue
+            result["notes"].append(
+                f"Kept entry with missing ROM: {raw_path}"
+            )
 
-        if result["orphans"]:
-            if options.delete_orphaned_images:
-                should_delete = True
-            elif options.no_prompt:
-                should_delete = False
-            else:
-                output(f"\n{system_name}: orphaned images")
-                for path in result["orphans"]:
-                    output(f"  {path.name}")
-                try:
-                    answer = ask(
-                        "Delete these images? [y/N]: "
-                    ).strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    answer = "n"
-                should_delete = answer in {"y", "yes"}
+        retained.append(entry)
+        if rom_exists:
+            known_files.add(resolved.name.casefold())
 
-            if should_delete:
-                for path in result["orphans"]:
-                    try:
-                        path.unlink()
-                        result["deleted"].append(path.name)
-                    except OSError as exc:
-                        result["notes"].append(
-                            f"Could not delete {path.name}: {exc}"
+        if not options.skip_ids:
+            existing_gameid = get_text(entry, "gameid")
+            existing_id = get_text(entry, "id")
+
+            if not existing_gameid:
+                old_id_key = id_key(existing_id)
+
+                if (
+                    existing_id
+                    and old_id_key is not None
+                    and old_id_key not in allocator.used_ids
+                ):
+                    new_gameid = existing_id
+                    allocator.reuse(old_id_key)
+                else:
+                    new_gameid = allocator.allocate()
+                    if existing_id:
+                        result["id_conflicts"].append(
+                            f"{raw_path}: existing <id>{existing_id}</id> "
+                            f"was not safe to reuse; assigned "
+                            f"<gameid>{new_gameid}</gameid>."
                         )
 
-    catalog_skipped = options.dry_run
-    catalog_sync_error = False
-    catalog_summary = None
+                set_child_text(entry, "gameid", new_gameid)
+                result["ids_added"].append(
+                    f"{raw_path} -> {new_gameid}"
+                )
+                xml_changed = True
 
+        if not options.skip_normalize:
+            changed_languages = normalize_language_fields(entry)
+            if changed_languages:
+                result["normalized"].append(
+                    f"{raw_path} ({', '.join(changed_languages)})"
+                )
+                xml_changed = True
+
+    replace_game_children(root, retained)
+
+    if not options.skip_add:
+        for _, game_file in discovered.items():
+            if game_file.name.casefold() in known_files:
+                continue
+
+            new_gameid = allocator.allocate()
+            root.append(make_entry(game_file.name, new_gameid, profile))
+            result["added"].append(game_file.name)
+            known_files.add(game_file.name.casefold())
+            xml_changed = True
+
+    dedup_removals = deduplicate_games(root, system_name, options.dedup)
+    if dedup_removals:
+        result["deduplicated"].extend(dedup_removals)
+        xml_changed = True
+
+    orphans, orphan_note = find_orphan_images(folder, root)
+    result["orphans"] = orphans
+    if orphan_note:
+        result["notes"].append(orphan_note)
+
+    if not options.skip_sort:
+        if sort_games_alphabetically(root):
+            result["sorted"] = True
+            result["notes"].append(
+                "Game entries sorted alphabetically by <name>."
+            )
+            xml_changed = True
+
+    if options.dry_run:
+        result["notes"].append("Dry-run: no files changed.")
+        return result
+
+    if xml_changed or options.force_write:
+        try:
+            result["backup"] = safe_write_xml(
+                tree, xml_path,
+                indent=options.indent,
+                declaration=options.xml_declaration,
+            )
+        except Exception as exc:
+            result["status"] = "ERROR"
+            result["notes"].append(f"XML replacement failed: {exc}")
+            return result
+
+    delete_orphans_if_requested(
+        system_name, result, options, output=output, ask=ask
+    )
+    return result
+
+
+def find_orphan_images(folder, root):
+    referenced_images = set()
+    for entry in root:
+        if local_tag(entry) != "game":
+            continue
+
+        image_value = get_text(entry, "image")
+        if image_value:
+            referenced_images.add(
+                Path(image_value.replace("\\", "/")).name.casefold()
+            )
+
+    image_folder = folder / "images"
+    if not image_folder.is_dir():
+        return [], None
+
+    try:
+        orphans = sorted(
+            [
+                path for path in image_folder.iterdir()
+                if path.is_file()
+                and path.suffix.lower() in IMAGE_EXTENSIONS
+                and path.name.casefold() not in referenced_images
+            ],
+            key=lambda path: path.name.casefold(),
+        )
+        return orphans, None
+    except OSError as exc:
+        return [], f"Could not scan images: {exc}"
+
+
+def delete_orphans_if_requested(
+    system_name,
+    result,
+    options,
+    *,
+    output=print,
+    ask=input,
+):
+    orphans = result["orphans"]
+
+    if not orphans:
+        return
+
+    if options.delete_orphaned_images:
+        should_delete = True
+    elif options.no_prompt:
+        should_delete = False
+    else:
+        output(f"\n{system_name}: orphaned images")
+        for path in orphans:
+            output(f"  {path.name}")
+        try:
+            answer = ask(
+                "Delete these images? [y/N]: "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        should_delete = answer in {"y", "yes"}
+
+    if should_delete:
+        for path in orphans:
+            try:
+                path.unlink()
+                result["deleted"].append(path.name)
+            except OSError as exc:
+                result["notes"].append(
+                    f"Could not delete {path.name}: {exc}"
+                )
+
+
+def run_catalog_sync(options, root_folder, *, output=print):
     if options.dry_run:
         output(
             "\nGlobal catalog synchronization skipped: "
             "dry-run does not write catalog files."
         )
-    else:
-        catalog_root = options.root_dat or (root_folder / "root.dat")
-        catalog_counts = (
-            options.fileinfo
-            or (root_folder.parent / "cubegm" / "fileinfo")
+        return True, False, None
+
+    catalog_root = options.root_dat or (root_folder / "root.dat")
+    catalog_counts = (
+        options.fileinfo
+        or (root_folder.parent / "cubegm" / "fileinfo")
+    )
+
+    try:
+        summary = sync_catalog(
+            root_folder=root_folder,
+            root_dat=catalog_root,
+            fileinfo_path=catalog_counts,
+            system_names=list(SYSTEMS),
+            dry_run=False,
+        )
+        output("\nGLOBAL CATALOG SYNCHRONIZATION")
+        output(f"  Games indexed: {summary['games']}")
+        output(f"  root.dat backup: {summary['root_dat_backup']}")
+        output(f"  fileinfo backup: {summary['fileinfo_backup']}")
+        output("  Catalog validation: passed")
+        return False, False, summary
+    except Exception as exc:
+        output(f"\nGLOBAL CATALOG SYNCHRONIZATION FAILED: {exc}")
+        output(
+            "  The catalog files were not intentionally left partially "
+            "updated; check the backups and XML/catalog consistency."
+        )
+        return False, True, None
+
+
+def run(options: Options, *, output=print, ask=input) -> RunResult:
+    root_folder = options.root
+    system_names = list(SYSTEMS) if options.system is None else [options.system]
+    records = read_system_xmls(root_folder, system_names)
+
+    existing_gameids, max_numeric_id, duplicates = collect_existing_ids(records)
+    allocator = IdAllocator(existing_gameids, max_numeric_id)
+
+    results = {}
+    for system_name in sorted(records, key=str.casefold):
+        results[system_name] = process_system(
+            system_name,
+            records[system_name],
+            options,
+            allocator,
+            output=output,
+            ask=ask,
         )
 
-        try:
-            catalog_summary = sync_catalog(
-                root_folder=root_folder,
-                root_dat=catalog_root,
-                fileinfo_path=catalog_counts,
-                system_names=list(SYSTEMS),
-                dry_run=False,
-            )
-            output("\nGLOBAL CATALOG SYNCHRONIZATION")
-            output(f"  Games indexed: {catalog_summary['games']}")
-            output(f"  root.dat backup: {catalog_summary['root_dat_backup']}")
-            output(f"  fileinfo backup: {catalog_summary['fileinfo_backup']}")
-            output("  Catalog validation: passed")
-        except Exception as exc:
-            output(f"\nGLOBAL CATALOG SYNCHRONIZATION FAILED: {exc}")
-            output(
-                "  The catalog files were not intentionally left partially "
-                "updated; check the backups and XML/catalog consistency."
-            )
-            catalog_sync_error = True
+    catalog_skipped, catalog_sync_error, catalog_summary = run_catalog_sync(
+        options, root_folder, output=output
+    )
 
     return RunResult(
         root_folder=root_folder,
