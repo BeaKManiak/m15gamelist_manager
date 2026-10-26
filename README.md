@@ -31,7 +31,7 @@ about which change broke it, so each behavior can be toggled to bisect a problem
 
 ## Requirements
 
-- Python 3.8+.
+- Python 3.9+. (`ET.indent`, used by the writer, was added in 3.9.)
 - Read/write access to the ROM directories and the catalog files.
 - Existing `root.dat` and `fileinfo` if catalog synchronization is required.
 
@@ -138,6 +138,10 @@ system/rom.zip <TAB> "00803  Display Name" <TAB> "00803  DISPLAY NAME" <TAB> "00
 
 Fields 2–4 carry a rendered `NNNNN␣␣` ID prefix (5 digits + 2 spaces), stripped
 when existing localized titles are read back and preserved by ROM path.
+
+When validating generated output, compare `root.dat` by its three uncompressed
+member payloads, not by the archive bytes: ZIP headers include a timestamp and
+change between runs. `gamelist.xml` and `fileinfo` are byte-stable.
 
 **`cubegm/fileinfo`** — 25 comma-separated non-negative integers:
 
