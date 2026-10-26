@@ -32,7 +32,7 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from catalog_sync import sync_catalog
+from catalog_sync import catalog_issues, sync_catalog
 from m15core import (
     find_system_folder as _find_system_folder,
     get_child,
@@ -484,6 +484,7 @@ class RunResult:
     catalog_skipped: bool = False
     catalog_sync_error: bool = False
     catalog_summary: dict | None = None
+    preflight_issues: list | None = None
 
     @property
     def errors(self) -> int:
@@ -493,6 +494,7 @@ class RunResult:
                 for result in self.systems.values()
             )
             + int(self.catalog_sync_error)
+            + int(bool(self.preflight_issues))
         )
 
     @property
@@ -670,19 +672,12 @@ class IdAllocator:
         return value
 
 
-def process_system(
-    system_name,
-    record,
-    options,
-    allocator,
-    *,
-    output=print,
-    ask=input,
-):
+def transform_system(system_name, record, options, allocator):
+    """Apply all in-memory changes for one system without writing files."""
     result = new_system_result(system_name, record)
 
     if record.get("status") != "OK":
-        return result
+        return result, None
 
     folder = record["folder"]
     xml_path = record["xml_path"]
@@ -696,7 +691,7 @@ def process_system(
     except OSError as exc:
         result["status"] = "ERROR"
         result["notes"].append(f"Could not scan game files: {exc}")
-        return result
+        return result, None
 
     retained = []
     known_files = set()
@@ -799,23 +794,51 @@ def process_system(
 
     if options.dry_run:
         result["notes"].append("Dry-run: no files changed.")
-        return result
 
-    if xml_changed or options.force_write:
+    context = {
+        "folder": folder,
+        "xml_path": xml_path,
+        "tree": tree,
+        "root": root,
+        "xml_changed": xml_changed,
+    }
+    return result, context
+
+
+def commit_system(result, context, options, *, output=print, ask=input):
+    """Write one transformed system and delete its orphans if requested."""
+    if context is None or options.dry_run:
+        return
+
+    if context["xml_changed"] or options.force_write:
         try:
             result["backup"] = safe_write_xml(
-                tree, xml_path,
+                context["tree"], context["xml_path"],
                 indent=options.indent,
                 declaration=options.xml_declaration,
             )
         except Exception as exc:
             result["status"] = "ERROR"
             result["notes"].append(f"XML replacement failed: {exc}")
-            return result
+            return
 
     delete_orphans_if_requested(
-        system_name, result, options, output=output, ask=ask
+        result["system"], result, options, output=output, ask=ask
     )
+
+
+def process_system(
+    system_name,
+    record,
+    options,
+    allocator,
+    *,
+    output=print,
+    ask=input,
+):
+    """Transform and commit one system (kept for direct unit tests)."""
+    result, context = transform_system(system_name, record, options, allocator)
+    commit_system(result, context, options, output=output, ask=ask)
     return result
 
 
@@ -927,6 +950,28 @@ def run_catalog_sync(options, root_folder, *, output=print):
         return False, True, None
 
 
+def collect_preflight_issues(records, transformed):
+    """Validate the post-transformation trees before any file is written."""
+    issues = []
+    roots = {}
+
+    for system_name in sorted(SYSTEMS, key=str.casefold):
+        record = records.get(system_name)
+        if record is None or record.get("status") != "OK":
+            detail = "; ".join(record.get("notes", [])) if record else ""
+            issues.append(
+                f"{system_name}: {detail or 'system folder/XML not readable'}"
+            )
+            continue
+        context = transformed.get(system_name)
+        roots[system_name] = (
+            context["root"] if context else record["root"]
+        )
+
+    issues.extend(catalog_issues(roots, list(roots)))
+    return issues
+
+
 def run(options: Options, *, output=print, ask=input) -> RunResult:
     root_folder = options.root
     if options.system is None:
@@ -942,12 +987,37 @@ def run(options: Options, *, output=print, ask=input) -> RunResult:
     allocator = IdAllocator(existing_gameids, max_numeric_id)
 
     results = {}
+    transformed = {}
     for system_name in sorted(records, key=str.casefold):
-        results[system_name] = process_system(
+        result, context = transform_system(
             system_name,
             records[system_name],
             options,
             allocator,
+        )
+        results[system_name] = result
+        if context is not None:
+            transformed[system_name] = context
+
+    preflight_issues = collect_preflight_issues(pool_records, transformed)
+    if preflight_issues:
+        output("\nCATALOG PREFLIGHT FAILED (no files were changed):")
+        for issue in preflight_issues:
+            output(f"  - {issue}")
+        return RunResult(
+            root_folder=root_folder,
+            options=options,
+            systems=results,
+            duplicates=duplicates,
+            catalog_skipped=True,
+            preflight_issues=preflight_issues,
+        )
+
+    for system_name in sorted(results, key=str.casefold):
+        commit_system(
+            results[system_name],
+            transformed.get(system_name),
+            options,
             output=output,
             ask=ask,
         )

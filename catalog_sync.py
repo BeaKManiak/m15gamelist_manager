@@ -142,6 +142,56 @@ def _read_xml_catalog(root_folder, system_names):
     return games, counts
 
 
+def catalog_issues(roots, system_names):
+    """Return catalog-validation issues for in-memory gamelist roots.
+
+    ``roots`` maps system name to an ElementTree root (or None when the
+    system is missing or unreadable). The rules match _read_xml_catalog.
+    """
+    issues = []
+    ids_seen = {}
+    paths_seen = {}
+
+    for system in system_names:
+        root = roots.get(system)
+        if root is None:
+            issues.append(f"Missing or unreadable gamelist: {system}")
+            continue
+        if _tag(root) != "gameList":
+            issues.append(f"{system}: unexpected root <{_tag(root)}>")
+            continue
+
+        for index, entry in enumerate(root, 1):
+            if _tag(entry) != "game":
+                continue
+            raw_path = _text(entry, "path")
+            gameid = _text(entry, "gameid")
+            if not raw_path:
+                issues.append(f"{system}: game #{index} has no <path>")
+                continue
+            if not gameid.isdigit():
+                issues.append(
+                    f"{system}/{raw_path}: non-numeric <gameid> {gameid!r}"
+                )
+                continue
+            canonical_id = str(int(gameid))
+            label = f"{system}/{raw_path}"
+            if canonical_id in ids_seen:
+                issues.append(
+                    f"Duplicate gameid {gameid!r}: "
+                    f"{ids_seen[canonical_id]} and {label}"
+                )
+                continue
+            ids_seen[canonical_id] = label
+            key = _catalog_path(system, raw_path)
+            if key in paths_seen:
+                issues.append(f"Duplicate catalog path: {key}")
+                continue
+            paths_seen[key] = label
+
+    return issues
+
+
 def _member_bytes(games, member, language, old_titles):
     lines = []
     for path in sorted(games, key=str.casefold):
