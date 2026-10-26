@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Tkinter GUI for the M15 ROM collection manager.
 
-A thin front-end over the existing command-line scripts:
+A thin front-end over the manager, restore, and backup-pruning APIs:
 
     gamelist_manager.py
     restore_gamelist.py
     delete_gamelist_backups.py
 
-Those scripts are used unmodified: this GUI builds an argument list, runs the
-script's ``main()`` on a background thread, and streams its output into a log
-window.
+The GUI calls their ``Options``/``run()`` or ``main()`` functions directly on a
+background thread and streams output into a log window. It does not patch
+``sys.argv``, ``sys.stdout``, or the process working directory.
 
 Standard library only (tkinter), Python 3.9+.
 """
@@ -29,6 +29,7 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 import gamelist_manager
+import restore_catalog
 import restore_gamelist
 import delete_gamelist_backups
 
@@ -235,6 +236,29 @@ class App:
         boxed("Delete orphan images", self.orphans_var,
               "Remove unreferenced images", 3, row=1)
 
+        backups = ttk.Frame(box)
+        backups.pack(fill="x", pady=(8, 0))
+        ttk.Label(backups, text="Keep backups:").pack(side="left")
+        self.keep_baks_var = tk.StringVar(value="5")
+        ttk.Spinbox(
+            backups,
+            from_=0,
+            to=99,
+            textvariable=self.keep_baks_var,
+            width=5,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Label(
+            backups,
+            text="per file (0 = keep all)",
+            foreground="#666",
+        ).pack(side="left", padx=(6, 0))
+        self.catalog_backups_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            backups,
+            text="Also delete catalog backups",
+            variable=self.catalog_backups_var,
+        ).pack(side="left", padx=(18, 0))
+
     def _build_actions(self, parent):
         box = ttk.LabelFrame(parent, text="Run", padding=8)
         box.pack(fill="x", pady=(10, 0))
@@ -280,6 +304,19 @@ class App:
             command=lambda: self.run_prune(dry_run=False),
         )
         self.prune_btn.pack(side="left", padx=(8, 0))
+
+        row3 = ttk.Frame(box)
+        row3.pack(fill="x", pady=(8, 0))
+        self.catalog_restore_preview_btn = ttk.Button(
+            row3, text="Restore catalog (preview)",
+            command=lambda: self.run_catalog_restore(dry_run=True),
+        )
+        self.catalog_restore_preview_btn.pack(side="left")
+        self.catalog_restore_btn = ttk.Button(
+            row3, text="Restore catalog",
+            command=lambda: self.run_catalog_restore(dry_run=False),
+        )
+        self.catalog_restore_btn.pack(side="left", padx=(8, 0))
 
         ttk.Label(
             box,
@@ -330,6 +367,7 @@ class App:
         for btn in (
             self.preview_btn, self.apply_btn, self.restore_preview_btn,
             self.restore_btn, self.prune_preview_btn, self.prune_btn,
+            self.catalog_restore_preview_btn, self.catalog_restore_btn,
         ):
             btn.configure(state=state)
         if busy:
@@ -411,44 +449,54 @@ class App:
             ):
                 return
 
-        args = self.build_manager_args(root, dry_run)
         self.log_append(
-            "\n=== gamelist_manager %s ===\n$ gamelist_manager.py %s\n"
-            % ("(dry run)" if dry_run else "(apply)", " ".join(args))
+            "\n=== gamelist_manager %s ===\nroot=%s system=%s dedup=%s\n"
+            % (
+                "(dry run)" if dry_run else "(apply)",
+                root,
+                self.selected_system() or "all",
+                self.dedup_var.get(),
+            )
         )
+        options = self.build_manager_options(root, dry_run)
         label = "Applying changes..." if not dry_run else "Previewing..."
-        self.run_in_thread(
-            gamelist_manager.main, args, root, label, preview=dry_run
+        self.run_direct(
+            lambda writer: self._run_manager_job(options, writer),
+            label,
+            preview=dry_run,
         )
 
-    def build_manager_args(self, root, dry_run):
-        args = ["--root", root]
+    def build_manager_options(self, root, dry_run):
         system = self.selected_system()
-        if system:
-            args += ["--system", system]
-        if dry_run:
-            args.append("--dry-run")
-        if not self.remove_missing_var.get():
-            args.append("--skip-remove-missing")
-        if not self.add_var.get():
-            args.append("--skip-add")
-        if not self.ids_var.get():
-            args.append("--skip-ids")
-        if not self.normalize_var.get():
-            args.append("--skip-normalize")
-        if not self.sort_var.get():
-            args.append("--skip-sort")
-        args += ["--dedup", self.dedup_var.get()]
-        if not self.indent_var.get():
-            args.append("--no-indent")
-        args += ["--xml-declaration", self.decl_var.get()]
-        if self.force_var.get():
-            args.append("--force-write")
-        if self.orphans_var.get() and not dry_run:
-            args.append("--delete-orphaned-images")
-        else:
-            args.append("--no-prompt")
-        return args
+        delete_orphans = self.orphans_var.get() and not dry_run
+        try:
+            keep_baks = int(str(self.keep_baks_var.get()).strip() or 5)
+        except (TypeError, ValueError):
+            keep_baks = 5
+        keep_baks = max(0, keep_baks)
+        return gamelist_manager.Options(
+            root=Path(root),
+            system=system,
+            dry_run=dry_run,
+            delete_orphaned_images=delete_orphans,
+            no_prompt=not delete_orphans,
+            skip_remove_missing=not self.remove_missing_var.get(),
+            skip_add=not self.add_var.get(),
+            skip_ids=not self.ids_var.get(),
+            skip_normalize=not self.normalize_var.get(),
+            skip_sort=not self.sort_var.get(),
+            dedup=self.dedup_var.get(),
+            indent=self.indent_var.get(),
+            xml_declaration=self.decl_var.get(),
+            force_write=self.force_var.get(),
+            keep_baks=keep_baks,
+            show_spinner=False,
+        )
+
+    def _run_manager_job(self, options, writer):
+        result = gamelist_manager.run(options, output=writer.write)
+        gamelist_manager.print_report(result, output=writer.write)
+        return result.exit_code
 
     def run_restore(self, dry_run):
         root = self.validate_root()
@@ -474,8 +522,10 @@ class App:
             "\n=== restore_gamelist %s ===\n$ restore_gamelist.py %s\n"
             % ("(dry run)" if dry_run else "(restore)", " ".join(args) or "(all)")
         )
-        self.run_in_thread(
-            restore_gamelist.main, args, root,
+        self.run_direct(
+            lambda writer: restore_gamelist.main(
+                args, root=root, output=writer.write
+            ),
             "Restoring..." if not dry_run else "Previewing restore...",
             preview=dry_run,
         )
@@ -490,64 +540,87 @@ class App:
         if not dry_run and not messagebox.askyesno(
             "Delete backups",
             "Permanently delete timestamped gamelist backups "
-            "(including *.recovery.bak) in this folder?\n\n"
-            "This cannot be undone.",
+            "(including *.recovery.bak) in this folder"
+            + (
+                " and the root.dat/fileinfo backups"
+                if self.catalog_backups_var.get()
+                else ""
+            )
+            + "?\n\nThis cannot be undone.",
         ):
             return
         args = []
         system = self.selected_system()
         if system:
             args += ["--system", system]
+        if self.catalog_backups_var.get():
+            args.append("--catalog")
         if dry_run:
             args.append("--dry-run")
         self.log_append(
             "\n=== delete_gamelist_backups %s ===\n$ delete_gamelist_backups.py %s\n"
             % ("(dry run)" if dry_run else "(delete)", " ".join(args) or "(all)")
         )
-        self.run_in_thread(
-            delete_gamelist_backups.main, args, root,
+        self.run_direct(
+            lambda writer: delete_gamelist_backups.main(
+                args, root=root, output=writer.write
+            ),
             "Deleting backups..." if not dry_run else "Listing backups...",
             preview=dry_run,
         )
 
-    def run_in_thread(self, func, args, cwd, label, preview=False):
+    def run_catalog_restore(self, dry_run):
+        root = self.validate_root()
+        if not root:
+            messagebox.showerror(
+                "No folder", "Select the ROM collection folder first."
+            )
+            return
+        if not dry_run and not messagebox.askyesno(
+            "Restore catalog",
+            "Replace root.dat and fileinfo with the newest valid matching "
+            "backup pair? The current files are saved as *.recovery.bak "
+            "first.",
+        ):
+            return
+        args = ["--dry-run"] if dry_run else []
+        self.log_append(
+            "\n=== restore_catalog %s ===\n"
+            % ("(dry run)" if dry_run else "(restore)")
+        )
+        self.run_direct(
+            lambda writer: restore_catalog.main(
+                args, root=root, output=writer.write
+            ),
+            "Restoring catalog..." if not dry_run else "Previewing catalog...",
+            preview=dry_run,
+        )
+
+    def run_direct(self, func, label, preview=False):
+        """Run a callable that receives a writer and returns an exit code."""
         if self.busy:
             return
         self.preview = preview
         self.set_busy(True, label)
         worker = threading.Thread(
-            target=self._worker, args=(func, args, cwd), daemon=True
+            target=self._direct_worker, args=(func,), daemon=True
         )
         worker.start()
         self.root.after(80, self.poll)
 
-    def _worker(self, func, args, cwd):
+    def _direct_worker(self, func):
         writer = QueueWriter(self.events)
-        saved_argv = sys.argv
-        saved_cwd = os.getcwd()
-        saved_stdout, saved_stderr = sys.stdout, sys.stderr
         code = 0
         try:
-            sys.stdout = writer
-            sys.stderr = writer
-            sys.argv = [saved_argv[0] if saved_argv else "app"] + list(args)
-            os.chdir(cwd)
-            result = func()
+            result = func(writer)
             if isinstance(result, int):
                 code = result
         except SystemExit as exc:
-            code = exc.code if isinstance(exc.code, int) else 0
+            code = exc.code if isinstance(exc.code, int) else 1
         except Exception:
             traceback.print_exc(file=writer)
             code = 1
         finally:
-            sys.stdout = saved_stdout
-            sys.stderr = saved_stderr
-            sys.argv = saved_argv
-            try:
-                os.chdir(saved_cwd)
-            except OSError:
-                pass
             self.events.put(("done", code))
 
     def poll(self):

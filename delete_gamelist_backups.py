@@ -24,17 +24,33 @@ BACKUP_PATTERN = re.compile(
     r"\.bak$"
 )
 
+CATALOG_BACKUP_PATTERN = re.compile(
+    r"^(?:root\.dat|fileinfo)\."
+    r"\d{8}_\d{6}"
+    r"(?:_\d+)?"
+    r"(?:\.recovery)?"
+    r"\.bak$"
+)
 
-def find_backups(root: Path, recursive: bool):
+
+def find_backups(root: Path, recursive: bool, pattern=BACKUP_PATTERN):
     """Find matching backup files."""
     iterator = root.rglob("*") if recursive else root.glob("*")
 
     for path in iterator:
-        if path.is_file() and BACKUP_PATTERN.fullmatch(path.name):
+        if path.is_file() and pattern.fullmatch(path.name):
             yield path
 
 
-def main() -> int:
+def find_catalog_backups(root_dat: Path, fileinfo_path: Path):
+    """Find root.dat and fileinfo backups."""
+    for target in (root_dat, fileinfo_path):
+        for path in target.parent.glob(f"{target.name}.*.bak"):
+            if path.is_file() and CATALOG_BACKUP_PATTERN.fullmatch(path.name):
+                yield path
+
+
+def main(argv=None, root=None, *, output=print) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Delete timestamped gamelist.xml backups from the current "
@@ -58,9 +74,24 @@ def main() -> int:
         "--system",
         help="Limit operation to one system folder, e.g. snes or gb.",
     )
+    parser.add_argument(
+        "--catalog",
+        action="store_true",
+        help="Also delete root.dat and fileinfo backups.",
+    )
+    parser.add_argument(
+        "--root-dat",
+        type=Path,
+        help="Path to root.dat (default: <root>/root.dat).",
+    )
+    parser.add_argument(
+        "--fileinfo",
+        type=Path,
+        help="Path to fileinfo (default: <root>/../cubegm/fileinfo).",
+    )
 
-    args = parser.parse_args()
-    root = Path.cwd().resolve()
+    args = parser.parse_args(argv)
+    root = Path.cwd().resolve() if root is None else Path(root).expanduser().resolve()
 
     if args.system:
         if (
@@ -74,20 +105,25 @@ def main() -> int:
         search_root = root / args.system
 
         if not search_root.is_dir():
-            print(f"ERROR: System directory does not exist: {search_root}")
+            output(f"ERROR: System directory does not exist: {search_root}")
             return 2
     else:
         search_root = root
 
-    backups = sorted(find_backups(search_root, args.recursive))
+    backups = set(find_backups(search_root, args.recursive))
+    if args.catalog:
+        root_dat = args.root_dat or (root / "root.dat")
+        fileinfo_path = args.fileinfo or (root.parent / "cubegm" / "fileinfo")
+        backups.update(find_catalog_backups(root_dat, fileinfo_path))
+    backups = sorted(backups)
 
-    print(f"Root: {root}")
-    print(f"Search directory: {search_root}")
-    print(f"Mode: {'DRY RUN' if args.dry_run else 'DELETE'}")
-    print(f"Matching backups: {len(backups)}")
+    output(f"Root: {root}")
+    output(f"Search directory: {search_root}")
+    output(f"Mode: {'DRY RUN' if args.dry_run else 'DELETE'}")
+    output(f"Matching backups: {len(backups)}")
 
     if not backups:
-        print("No matching gamelist backups found.")
+        output("No matching backups found.")
         return 0
 
     deleted = 0
@@ -100,24 +136,24 @@ def main() -> int:
             relative = path
 
         if args.dry_run:
-            print(f"WOULD DELETE: {relative}")
+            output(f"WOULD DELETE: {relative}")
             continue
 
         try:
             path.unlink()
-            print(f"DELETED: {relative}")
+            output(f"DELETED: {relative}")
             deleted += 1
         except OSError as exc:
-            print(f"ERROR deleting {relative}: {exc}")
+            output(f"ERROR deleting {relative}: {exc}")
             errors += 1
 
     if args.dry_run:
-        print(f"\nDry run complete: {len(backups)} backup(s) would be deleted.")
-        print("No files were changed.")
+        output(f"\nDry run complete: {len(backups)} backup(s) would be deleted.")
+        output("No files were changed.")
         return 0
 
-    print(f"\nDeleted: {deleted}")
-    print(f"Errors: {errors}")
+    output(f"\nDeleted: {deleted}")
+    output(f"Errors: {errors}")
 
     return 1 if errors else 0
 

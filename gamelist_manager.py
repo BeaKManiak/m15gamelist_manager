@@ -15,10 +15,18 @@ Writer options:
   --xml-declaration {et,double}   et = ElementTree default (single quotes),
                                   double = <?xml version="1.0" encoding="utf-8"?>
   --force-write           write even if nothing changed (round-trip test)
+  --keep-baks N           keep newest N backups per file (default 5, 0 = all)
 
 Shortcut:
-  --roundtrip             all features off + force-write: parse and re-save only
+  --roundtrip             all features off + force-write: parse and re-save XML
+                          only (skips preflight and catalog sync)
+
+Diagnostics:
+  --skip-preflight        write even when catalog preflight would reject the XML
+  --skip-catalog          do not rebuild root.dat/fileinfo
 """
+
+from __future__ import annotations
 
 import argparse
 import datetime
@@ -30,121 +38,42 @@ import tempfile
 import threading
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
-from catalog_sync import sync_catalog
+from catalog_sync import catalog_file_issues, catalog_issues, sync_catalog
+from m15core import (
+    find_system_folder as _find_system_folder,
+    get_child,
+    get_text,
+    local_tag,
+    next_backup_suffix,
+    prune_backups,
+    set_child_text,
+)
+from systems import SYSTEMS
 
 LANGUAGES = ("zh_CN", "en_US", "zh_TW", "ko_KR")
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-SYSTEMS = {
-    "arcade": {
-        "extensions": {".fba", ".zip"}, "video_id": "0",
-        "class_type": "0", "game_type": "0", "timer": "/sdcard/game/cps",
-    },
-    "atari2600": {
-        "extensions": {".a26"}, "video_id": "15",
-        "class_type": "15", "game_type": "0", "timer": "atari2600",
-    },
-    "atari5200": {
-        "extensions": {".zip"}, "video_id": "-12",
-        "class_type": "-12", "game_type": "0", "timer": "atari5200",
-    },
-    "atari7800": {
-        "extensions": {".a78", ".zip"}, "video_id": "17",
-        "class_type": "17", "game_type": "0", "timer": "atari7800",
-    },
-    "atarilynx": {
-        "extensions": {".zip"}, "video_id": "-12",
-        "class_type": "-12", "game_type": "0", "timer": "atarilynx",
-    },
-    "cps1": {
-        "extensions": {".fba", ".zip"}, "video_id": "0",
-        "class_type": "0", "game_type": "0", "timer": "cps1",
-    },
-    "cps2": {
-        "extensions": {".fba", ".zip"}, "video_id": "0",
-        "class_type": "0", "game_type": "0", "timer": "cps2",
-    },
-    "cps3": {
-        "extensions": {".zip", ".fba"}, "video_id": "18",
-        "class_type": "18", "game_type": "0", "timer": "/sdcard/game/cps",
-    },
-    "fbneo": {
-        "extensions": {".zip", ".fba"}, "video_id": "-12",
-        "class_type": "-12", "game_type": "0", "timer": "fbneo",
-    },
-    "gb": {
-        "extensions": {".zip", ".gb"}, "video_id": "7",
-        "class_type": "7", "game_type": "0", "timer": "gb",
-    },
-    "gba": {
-        "extensions": {".zip"}, "video_id": "7",
-        "class_type": "7", "game_type": "0", "timer": "gba",
-    },
-    "gbc": {
-        "extensions": {".zip"}, "video_id": "7",
-        "class_type": "7", "game_type": "0", "timer": "gbc",
-    },
-    "gamegear": {
-        "extensions": {".zip"}, "video_id": "-12",
-        "class_type": "-12", "game_type": "0", "timer": "gamegear",
-    },
-    "genesis": {
-        "extensions": {".zip"}, "video_id": "-12",
-        "class_type": "-12", "game_type": "0", "timer": "genesis",
-    },
-    "mame": {
-        "extensions": {".zip"}, "video_id": "0",
-        "class_type": "0", "game_type": "0", "timer": "/sdcard/game/cps",
-    },
-    "megadrive": {
-        "extensions": {".zip"}, "video_id": "5",
-        "class_type": "5", "game_type": "0", "timer": "megadrive",
-    },
-    "nes": {
-        "extensions": {".zip"}, "video_id": "0",
-        "class_type": "0", "game_type": "2", "timer": "nes",
-    },
-    "nesh": {
-        "extensions": {".zip"}, "video_id": "0",
-        "class_type": "0", "game_type": "2", "timer": "nesh",
-    },
-    "ngpc": {
-        "extensions": {".zip"}, "video_id": "-12",
-        "class_type": "-12", "game_type": "0", "timer": "ngpc",
-    },
-    "pcengine": {
-        "extensions": {".zip"}, "video_id": "-12",
-        "class_type": "-12", "game_type": "0", "timer": "pcengine",
-    },
-    "psx": {
-        "extensions": {
-            ".img", ".pbp", ".iso", ".bin", ".chd", ".cue", ".ccd",
-            ".mdf", ".mds", ".nrg", ".cso", ".zso", ".ecm",
-        },
-        "video_id": "x", "class_type": None,
-        "game_type": "0", "timer": "psx",
-        "core": "pcsx_rearmed_chd_libretro.so",
-    },
-    "sfc": {
-        "extensions": {".zip"}, "video_id": "6",
-        "class_type": "6", "game_type": "0", "timer": "sfc",
-    },
-    "snes": {
-        "extensions": {".zip"}, "video_id": "6",
-        "class_type": "6", "game_type": "0", "timer": "snes",
-    },
-}
-
 
 class Spinner:
-    def __init__(self, message):
+    def __init__(self, message, enabled=True):
         self.message = message
+        self.enabled = enabled
         self.stop_event = threading.Event()
         self.thread = None
+        self.stream = None
 
     def __enter__(self):
-        if sys.stdout.isatty():
+        if not self.enabled:
+            return self
+        stream = sys.stdout
+        try:
+            animate = stream is not None and stream.isatty()
+        except (AttributeError, ValueError):
+            animate = False
+        if animate:
+            self.stream = stream
             self.thread = threading.Thread(
                 target=self._animate, daemon=True
             )
@@ -155,47 +84,18 @@ class Spinner:
         frames = "|/-\\"
         i = 0
         while not self.stop_event.wait(0.12):
-            sys.stdout.write(
+            self.stream.write(
                 f"\r{self.message} {frames[i % len(frames)]}"
             )
-            sys.stdout.flush()
+            self.stream.flush()
             i += 1
 
     def __exit__(self, *args):
         self.stop_event.set()
         if self.thread:
             self.thread.join()
-            sys.stdout.write("\r" + " " * (len(self.message) + 8) + "\r")
-            sys.stdout.flush()
-
-
-def local_tag(element):
-    """Return a tag name without an optional XML namespace."""
-    return (
-        element.tag.rsplit("}", 1)[-1]
-        if isinstance(element.tag, str)
-        else ""
-    )
-
-
-def get_child(element, name):
-    for item in element:
-        if local_tag(item) == name:
-            return item
-    return None
-
-
-def get_text(element, name):
-    item = get_child(element, name)
-    return item.text.strip() if item is not None and item.text else ""
-
-
-def set_child_text(element, name, value):
-    item = get_child(element, name)
-    if item is None:
-        item = ET.SubElement(element, name)
-    item.text = str(value)
-    return item
+            self.stream.write("\r" + " " * (len(self.message) + 8) + "\r")
+            self.stream.flush()
 
 
 def id_key(value):
@@ -240,24 +140,14 @@ def normalize_language_fields(entry):
 
 
 def find_system_folder(root, name):
-    direct = root / name
-    if direct.is_dir():
-        return direct
-    try:
-        for candidate in root.iterdir():
-            if (
-                candidate.is_dir()
-                and candidate.name.casefold() == name.casefold()
-            ):
-                return candidate
-    except OSError:
-        pass
-    return None
+    return _find_system_folder(root, name, ignore_oserror=True)
 
 
-def scan_game_files(folder, extensions):
+def scan_game_files(folder, extensions, *, show_spinner=True):
     files = {}
-    with Spinner(f"Scanning {folder.name} ROM files"):
+    with Spinner(
+        f"Scanning {folder.name} ROM files", enabled=show_spinner
+    ):
         for path in folder.iterdir():
             if not path.is_file() or path.name.startswith("._"):
                 continue
@@ -303,14 +193,8 @@ def make_entry(filename, gameid, profile):
 
 def timestamped_backup(xml_path):
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    candidate = xml_path.with_name(f"{xml_path.name}.{stamp}.bak")
-    suffix = 1
-    while candidate.exists():
-        candidate = xml_path.with_name(
-            f"{xml_path.name}.{stamp}_{suffix}.bak"
-        )
-        suffix += 1
-    return candidate
+    suffix = next_backup_suffix([xml_path], stamp)
+    return xml_path.with_name(f"{xml_path.name}.{stamp}{suffix}.bak")
 
 
 def safe_write_xml(tree, xml_path, indent=True, declaration="et"):
@@ -343,18 +227,23 @@ def safe_write_xml(tree, xml_path, indent=True, declaration="et"):
             ET.indent(tree, space="  ")
 
         if declaration == "double":
-            tree.write(temp_path, encoding="utf-8", xml_declaration=False)
-            body = temp_path.read_bytes()
-            temp_path.write_bytes(
-                b'<?xml version="1.0" encoding="utf-8"?>\n' + body
+            body = ET.tostring(
+                tree.getroot(),
+                encoding="utf-8",
+                xml_declaration=False,
             )
+            data = b'<?xml version="1.0" encoding="utf-8"?>\n' + body
         else:
-            tree.write(temp_path, encoding="utf-8", xml_declaration=True)
+            data = ET.tostring(
+                tree.getroot(),
+                encoding="utf-8",
+                xml_declaration=True,
+            )
 
         if had_bom:
-            temp_path.write_bytes(
-                b"\xef\xbb\xbf" + temp_path.read_bytes()
-            )
+            data = b"\xef\xbb\xbf" + data
+
+        temp_path.write_bytes(data)
 
         ET.parse(temp_path)
 
@@ -382,7 +271,7 @@ def safe_write_xml(tree, xml_path, indent=True, declaration="et"):
                 pass
 
 
-def read_system_xmls(root_folder, system_names):
+def read_system_xmls(root_folder, system_names, *, show_spinner=True):
     records = {}
 
     for name in sorted(system_names, key=str.casefold):
@@ -406,7 +295,7 @@ def read_system_xmls(root_folder, system_names):
             continue
 
         try:
-            with Spinner(f"Reading {name} XML"):
+            with Spinner(f"Reading {name} XML", enabled=show_spinner):
                 tree = ET.parse(xml_path)
 
             root = tree.getroot()
@@ -587,7 +476,72 @@ def sort_games_alphabetically(root):
     return True
 
 
-def main():
+@dataclass
+class Options:
+    root: Path
+    system: str | None = None
+    dry_run: bool = False
+    delete_orphaned_images: bool = False
+    no_prompt: bool = False
+    root_dat: Path | None = None
+    fileinfo: Path | None = None
+    skip_remove_missing: bool = False
+    skip_add: bool = False
+    skip_ids: bool = False
+    skip_normalize: bool = False
+    skip_sort: bool = False
+    dedup: str = "both"
+    indent: bool = True
+    xml_declaration: str = "et"
+    force_write: bool = False
+    keep_baks: int = 5
+    show_spinner: bool = True
+    skip_preflight: bool = False
+    skip_catalog: bool = False
+
+
+@dataclass
+class RunResult:
+    root_folder: Path
+    options: Options
+    systems: dict
+    duplicates: list
+    catalog_skipped: bool = False
+    catalog_sync_error: bool = False
+    catalog_summary: dict | None = None
+    preflight_issues: list | None = None
+
+    @property
+    def errors(self) -> int:
+        return (
+            sum(
+                result["status"] == "ERROR"
+                for result in self.systems.values()
+            )
+            + int(self.catalog_sync_error)
+            + int(bool(self.preflight_issues))
+        )
+
+    @property
+    def skipped(self) -> int:
+        return sum(
+            result["status"] == "SKIPPED"
+            for result in self.systems.values()
+        )
+
+    @property
+    def exit_code(self) -> int:
+        return 1 if self.errors else 0
+
+
+def _nonnegative_int(value):
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return number
+
+
+def build_parser():
     parser = argparse.ArgumentParser(
         description=(
             "Synchronize gamelists with per-feature switches for "
@@ -640,12 +594,33 @@ def main():
                              "double: <?xml version=\"1.0\" ...?>")
     writer.add_argument("--force-write", action="store_true",
                         help="Write XML even when nothing changed.")
+    writer.add_argument(
+        "--keep-baks",
+        type=_nonnegative_int,
+        default=5,
+        metavar="N",
+        help="Keep the newest N timestamped backups per file "
+             "(default: 5; 0 = keep all).",
+    )
     writer.add_argument("--roundtrip", action="store_true",
                         help="All features off + force-write (parse and "
-                             "re-save only).")
+                             "re-save XML only; no preflight or catalog).")
 
-    args = parser.parse_args()
+    diag = parser.add_argument_group("diagnostics")
+    diag.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Write even when the catalog preflight would reject the XML.",
+    )
+    diag.add_argument(
+        "--skip-catalog",
+        action="store_true",
+        help="Do not rebuild root.dat/fileinfo.",
+    )
+    return parser
 
+
+def options_from_args(args) -> Options:
     if args.roundtrip:
         args.skip_remove_missing = True
         args.skip_add = True
@@ -655,14 +630,51 @@ def main():
         args.dedup = "none"
         args.force_write = True
         args.no_prompt = True
+        args.skip_preflight = True
+        args.skip_catalog = True
 
-    root_folder = args.root.expanduser().resolve()
-    if not root_folder.is_dir():
-        parser.error(f"Root folder does not exist: {root_folder}")
+    return Options(
+        root=args.root.expanduser().resolve(),
+        system=args.system,
+        dry_run=args.dry_run,
+        delete_orphaned_images=args.delete_orphaned_images,
+        no_prompt=args.no_prompt,
+        root_dat=args.root_dat,
+        fileinfo=args.fileinfo,
+        skip_remove_missing=args.skip_remove_missing,
+        skip_add=args.skip_add,
+        skip_ids=args.skip_ids,
+        skip_normalize=args.skip_normalize,
+        skip_sort=args.skip_sort,
+        dedup=args.dedup,
+        indent=not args.no_indent,
+        xml_declaration=args.xml_declaration,
+        force_write=args.force_write,
+        keep_baks=args.keep_baks,
+        skip_preflight=args.skip_preflight,
+        skip_catalog=args.skip_catalog,
+    )
 
-    system_names = list(SYSTEMS) if args.system is None else [args.system]
-    records = read_system_xmls(root_folder, system_names)
 
+def new_system_result(system_name, record):
+    return {
+        "system": system_name,
+        "status": record.get("status", "ERROR"),
+        "added": [],
+        "removed": [],
+        "deduplicated": [],
+        "normalized": [],
+        "ids_added": [],
+        "id_conflicts": [],
+        "orphans": [],
+        "deleted": [],
+        "backup": None,
+        "notes": list(record.get("notes", [])),
+        "sorted": False,
+    }
+
+
+def collect_existing_ids(records):
     existing_gameids = defaultdict(list)
     max_numeric_id = 0
 
@@ -696,310 +708,548 @@ def main():
         if len(occurrences) > 1
     ]
     duplicates.sort(key=lambda pair: str(pair[0]))
+    return existing_gameids, max_numeric_id, duplicates
 
-    used_ids = set(existing_gameids.keys())
-    next_id = max_numeric_id + 1
 
-    def allocate_id():
-        nonlocal next_id
-        while id_key(str(next_id)) in used_ids:
-            next_id += 1
-        value = str(next_id)
-        used_ids.add(id_key(value))
-        next_id += 1
+class IdAllocator:
+    def __init__(self, existing_gameids, max_numeric_id):
+        self.used_ids = set(existing_gameids)
+        self.next_id = max_numeric_id + 1
+
+    def reuse(self, key):
+        if key is not None:
+            self.used_ids.add(key)
+
+    def allocate(self):
+        while id_key(str(self.next_id)) in self.used_ids:
+            self.next_id += 1
+        value = str(self.next_id)
+        self.used_ids.add(id_key(value))
+        self.next_id += 1
         return value
 
-    results = {}
 
-    for system_name in sorted(records, key=str.casefold):
-        record = records[system_name]
-        result = {
-            "system": system_name,
-            "status": record.get("status", "ERROR"),
-            "added": [],
-            "removed": [],
-            "deduplicated": [],
-            "normalized": [],
-            "ids_added": [],
-            "id_conflicts": [],
-            "orphans": [],
-            "deleted": [],
-            "backup": None,
-            "notes": list(record.get("notes", [])),
-            "sorted": False,
-        }
-        results[system_name] = result
+def transform_system(system_name, record, options, allocator):
+    """Apply all in-memory changes for one system without writing files."""
+    result = new_system_result(system_name, record)
 
-        if record.get("status") != "OK":
+    if record.get("status") != "OK":
+        return result, None
+
+    folder = record["folder"]
+    xml_path = record["xml_path"]
+    tree = record["tree"]
+    root = record["root"]
+    profile = SYSTEMS[system_name]
+    xml_changed = False
+
+    try:
+        discovered = scan_game_files(
+            folder,
+            profile["extensions"],
+            show_spinner=options.show_spinner,
+        )
+    except OSError as exc:
+        result["status"] = "ERROR"
+        result["notes"].append(f"Could not scan game files: {exc}")
+        return result, None
+
+    retained = []
+    known_files = set()
+
+    for entry in list(root):
+        if local_tag(entry) != "game":
             continue
 
-        folder = record["folder"]
-        xml_path = record["xml_path"]
-        tree = record["tree"]
-        root = record["root"]
-        profile = SYSTEMS[system_name]
-        xml_changed = False
-
-        try:
-            discovered = scan_game_files(folder, profile["extensions"])
-        except OSError as exc:
-            result["status"] = "ERROR"
-            result["notes"].append(f"Could not scan game files: {exc}")
-            continue
-
-        retained = []
-        known_files = set()
-
-        for entry in list(root):
-            if local_tag(entry) != "game":
-                continue
-
-            raw_path = get_text(entry, "path")
-            if not raw_path:
-                retained.append(entry)
-                result["notes"].append(
-                    "Kept an existing game entry without <path>."
-                )
-                continue
-
-            resolved = resolve_game_path(folder, raw_path)
-            rom_exists = resolved.is_file()
-
-            if not rom_exists:
-                if not args.skip_remove_missing:
-                    result["removed"].append(raw_path)
-                    xml_changed = True
-                    continue
-                result["notes"].append(
-                    f"Kept entry with missing ROM: {raw_path}"
-                )
-
+        raw_path = get_text(entry, "path")
+        if not raw_path:
             retained.append(entry)
-            if rom_exists:
-                known_files.add(resolved.name.casefold())
-
-            if not args.skip_ids:
-                existing_gameid = get_text(entry, "gameid")
-                existing_id = get_text(entry, "id")
-
-                if not existing_gameid:
-                    old_id_key = id_key(existing_id)
-
-                    if (
-                        existing_id
-                        and old_id_key is not None
-                        and old_id_key not in used_ids
-                    ):
-                        new_gameid = existing_id
-                        used_ids.add(old_id_key)
-                    else:
-                        new_gameid = allocate_id()
-                        if existing_id:
-                            result["id_conflicts"].append(
-                                f"{raw_path}: existing <id>{existing_id}</id> "
-                                f"was not safe to reuse; assigned "
-                                f"<gameid>{new_gameid}</gameid>."
-                            )
-
-                    set_child_text(entry, "gameid", new_gameid)
-                    result["ids_added"].append(
-                        f"{raw_path} -> {new_gameid}"
-                    )
-                    xml_changed = True
-
-            if not args.skip_normalize:
-                changed_languages = normalize_language_fields(entry)
-                if changed_languages:
-                    result["normalized"].append(
-                        f"{raw_path} ({', '.join(changed_languages)})"
-                    )
-                    xml_changed = True
-
-        replace_game_children(root, retained)
-
-        if not args.skip_add:
-            for _, game_file in discovered.items():
-                if game_file.name.casefold() in known_files:
-                    continue
-
-                new_gameid = allocate_id()
-                root.append(make_entry(game_file.name, new_gameid, profile))
-                result["added"].append(game_file.name)
-                known_files.add(game_file.name.casefold())
-                xml_changed = True
-
-        dedup_removals = deduplicate_games(root, system_name, args.dedup)
-        if dedup_removals:
-            result["deduplicated"].extend(dedup_removals)
-            xml_changed = True
-
-        referenced_images = set()
-        for entry in root:
-            if local_tag(entry) != "game":
-                continue
-
-            image_value = get_text(entry, "image")
-            if image_value:
-                referenced_images.add(
-                    Path(image_value.replace("\\", "/")).name.casefold()
-                )
-
-        image_folder = folder / "images"
-        if image_folder.is_dir():
-            try:
-                result["orphans"] = sorted(
-                    [
-                        path for path in image_folder.iterdir()
-                        if path.is_file()
-                        and path.suffix.lower() in IMAGE_EXTENSIONS
-                        and path.name.casefold() not in referenced_images
-                    ],
-                    key=lambda path: path.name.casefold(),
-                )
-            except OSError as exc:
-                result["notes"].append(f"Could not scan images: {exc}")
-
-        if not args.skip_sort:
-            if sort_games_alphabetically(root):
-                result["sorted"] = True
-                result["notes"].append(
-                    "Game entries sorted alphabetically by <name>."
-                )
-                xml_changed = True
-
-        if args.dry_run:
-            result["notes"].append("Dry-run: no files changed.")
+            result["notes"].append(
+                "Kept an existing game entry without <path>."
+            )
             continue
 
-        if xml_changed or args.force_write:
-            try:
-                result["backup"] = safe_write_xml(
-                    tree, xml_path,
-                    indent=not args.no_indent,
-                    declaration=args.xml_declaration,
-                )
-            except Exception as exc:
-                result["status"] = "ERROR"
-                result["notes"].append(f"XML replacement failed: {exc}")
+        resolved = resolve_game_path(folder, raw_path)
+        rom_exists = resolved.is_file()
+
+        if not rom_exists:
+            if not options.skip_remove_missing:
+                result["removed"].append(raw_path)
+                xml_changed = True
                 continue
+            result["notes"].append(
+                f"Kept entry with missing ROM: {raw_path}"
+            )
 
-        if result["orphans"]:
-            if args.delete_orphaned_images:
-                should_delete = True
-            elif args.no_prompt:
-                should_delete = False
-            else:
-                print(f"\n{system_name}: orphaned images")
-                for path in result["orphans"]:
-                    print(f"  {path.name}")
-                try:
-                    answer = input(
-                        "Delete these images? [y/N]: "
-                    ).strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    answer = "n"
-                should_delete = answer in {"y", "yes"}
+        retained.append(entry)
+        if rom_exists:
+            known_files.add(resolved.name.casefold())
 
-            if should_delete:
-                for path in result["orphans"]:
-                    try:
-                        path.unlink()
-                        result["deleted"].append(path.name)
-                    except OSError as exc:
-                        result["notes"].append(
-                            f"Could not delete {path.name}: {exc}"
+        if not options.skip_ids:
+            existing_gameid = get_text(entry, "gameid")
+            existing_id = get_text(entry, "id")
+
+            if not existing_gameid:
+                old_id_key = id_key(existing_id)
+
+                if (
+                    existing_id
+                    and old_id_key is not None
+                    and old_id_key not in allocator.used_ids
+                ):
+                    new_gameid = existing_id
+                    allocator.reuse(old_id_key)
+                else:
+                    new_gameid = allocator.allocate()
+                    if existing_id:
+                        result["id_conflicts"].append(
+                            f"{raw_path}: existing <id>{existing_id}</id> "
+                            f"was not safe to reuse; assigned "
+                            f"<gameid>{new_gameid}</gameid>."
                         )
 
-                # Synchronize the global catalog after XML processing.
-    if args.dry_run:
-        print(
+                set_child_text(entry, "gameid", new_gameid)
+                result["ids_added"].append(
+                    f"{raw_path} -> {new_gameid}"
+                )
+                xml_changed = True
+
+        if not options.skip_normalize:
+            changed_languages = normalize_language_fields(entry)
+            if changed_languages:
+                result["normalized"].append(
+                    f"{raw_path} ({', '.join(changed_languages)})"
+                )
+                xml_changed = True
+
+    replace_game_children(root, retained)
+
+    if not options.skip_add:
+        for _, game_file in discovered.items():
+            if game_file.name.casefold() in known_files:
+                continue
+
+            new_gameid = allocator.allocate()
+            root.append(make_entry(game_file.name, new_gameid, profile))
+            result["added"].append(game_file.name)
+            known_files.add(game_file.name.casefold())
+            xml_changed = True
+
+    dedup_removals = deduplicate_games(root, system_name, options.dedup)
+    if dedup_removals:
+        result["deduplicated"].extend(dedup_removals)
+        xml_changed = True
+
+    orphans, orphan_note = find_orphan_images(folder, root)
+    result["orphans"] = orphans
+    if orphan_note:
+        result["notes"].append(orphan_note)
+
+    if not options.skip_sort:
+        if sort_games_alphabetically(root):
+            result["sorted"] = True
+            result["notes"].append(
+                "Game entries sorted alphabetically by <name>."
+            )
+            xml_changed = True
+
+    if options.dry_run:
+        result["notes"].append("Dry-run: no files changed.")
+
+    context = {
+        "folder": folder,
+        "xml_path": xml_path,
+        "tree": tree,
+        "root": root,
+        "xml_changed": xml_changed,
+    }
+    return result, context
+
+
+def commit_system(result, context, options, *, output=print, ask=input):
+    """Write one transformed system and delete its orphans if requested."""
+    if context is None or options.dry_run:
+        return
+
+    if context["xml_changed"] or options.force_write:
+        try:
+            result["backup"] = safe_write_xml(
+                context["tree"], context["xml_path"],
+                indent=options.indent,
+                declaration=options.xml_declaration,
+            )
+        except Exception as exc:
+            result["status"] = "ERROR"
+            result["notes"].append(f"XML replacement failed: {exc}")
+            return
+
+        deleted, errors = prune_backups(
+            context["xml_path"].parent,
+            context["xml_path"].name,
+            options.keep_baks,
+            protect=[result["backup"]],
+        )
+        if deleted:
+            result["notes"].append(
+                f"Pruned {len(deleted)} old XML backup(s)."
+            )
+        for error in errors:
+            result["notes"].append(error)
+
+    delete_orphans_if_requested(
+        result["system"], result, options, output=output, ask=ask
+    )
+
+
+def process_system(
+    system_name,
+    record,
+    options,
+    allocator,
+    *,
+    output=print,
+    ask=input,
+):
+    """Transform and commit one system (kept for direct unit tests)."""
+    result, context = transform_system(system_name, record, options, allocator)
+    commit_system(result, context, options, output=output, ask=ask)
+    return result
+
+
+def find_orphan_images(folder, root):
+    referenced_images = set()
+    for entry in root:
+        if local_tag(entry) != "game":
+            continue
+
+        image_value = get_text(entry, "image")
+        if image_value:
+            referenced_images.add(
+                Path(image_value.replace("\\", "/")).name.casefold()
+            )
+
+    image_folder = folder / "images"
+    if not image_folder.is_dir():
+        return [], None
+
+    try:
+        orphans = sorted(
+            [
+                path for path in image_folder.iterdir()
+                if path.is_file()
+                and path.suffix.lower() in IMAGE_EXTENSIONS
+                and path.name.casefold() not in referenced_images
+            ],
+            key=lambda path: path.name.casefold(),
+        )
+        return orphans, None
+    except OSError as exc:
+        return [], f"Could not scan images: {exc}"
+
+
+def delete_orphans_if_requested(
+    system_name,
+    result,
+    options,
+    *,
+    output=print,
+    ask=input,
+):
+    orphans = result["orphans"]
+
+    if not orphans:
+        return
+
+    if options.delete_orphaned_images:
+        should_delete = True
+    elif options.no_prompt:
+        should_delete = False
+    else:
+        output(f"\n{system_name}: orphaned images")
+        for path in orphans:
+            output(f"  {path.name}")
+        try:
+            answer = ask(
+                "Delete these images? [y/N]: "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        should_delete = answer in {"y", "yes"}
+
+    if should_delete:
+        for path in orphans:
+            try:
+                path.unlink()
+                result["deleted"].append(path.name)
+            except OSError as exc:
+                result["notes"].append(
+                    f"Could not delete {path.name}: {exc}"
+                )
+
+
+def catalog_paths(options, root_folder):
+    return (
+        options.root_dat or (root_folder / "root.dat"),
+        options.fileinfo or (root_folder.parent / "cubegm" / "fileinfo"),
+    )
+
+
+def apply_backup_retention(
+    options, root_folder, records, *, prune_catalog=True, output=print
+):
+    """Enforce --keep-baks even when a file was not rewritten this run."""
+    if options.dry_run or options.keep_baks <= 0:
+        return
+    deleted = 0
+    errors = []
+    for record in records.values():
+        if record.get("status") != "OK":
+            continue
+        folder = record.get("folder")
+        if folder is None:
+            continue
+        removed, problems = prune_backups(
+            folder, "gamelist.xml", options.keep_baks
+        )
+        deleted += len(removed)
+        errors.extend(problems)
+    if not options.skip_catalog and prune_catalog:
+        root_dat, fileinfo_path = catalog_paths(options, root_folder)
+        for path in (root_dat, fileinfo_path):
+            if path.parent.is_dir():
+                removed, problems = prune_backups(
+                    path.parent, path.name, options.keep_baks
+                )
+                deleted += len(removed)
+                errors.extend(problems)
+    if deleted:
+        output(f"\nBackup retention: pruned {deleted} old backup(s).")
+    for error in errors:
+        output(f"  Warning: {error}")
+
+
+def run_catalog_sync(options, root_folder, *, output=print):
+    if options.skip_catalog:
+        output(
+            "\nGlobal catalog synchronization skipped (--skip-catalog)."
+        )
+        return True, False, None
+    if options.dry_run:
+        output(
             "\nGlobal catalog synchronization skipped: "
             "dry-run does not write catalog files."
         )
-    else:
-        catalog_root = args.root_dat or (root_folder / "root.dat")
-        catalog_counts = (
-            args.fileinfo
-            or (root_folder.parent / "cubegm" / "fileinfo")
+        return True, False, None
+
+    catalog_root, catalog_counts = catalog_paths(options, root_folder)
+
+    try:
+        summary = sync_catalog(
+            root_folder=root_folder,
+            root_dat=catalog_root,
+            fileinfo_path=catalog_counts,
+            system_names=list(SYSTEMS),
+            dry_run=False,
+            keep_baks=options.keep_baks,
+        )
+        output("\nGLOBAL CATALOG SYNCHRONIZATION")
+        output(f"  Games indexed: {summary['games']}")
+        if summary.get("unchanged"):
+            output("  Catalog unchanged; no files written.")
+        else:
+            output(f"  root.dat backup: {summary['root_dat_backup']}")
+            output(f"  fileinfo backup: {summary['fileinfo_backup']}")
+            pruned = summary.get("pruned", 0)
+            if pruned:
+                output(f"  Old catalog backups pruned: {pruned}")
+        output("  Catalog validation: passed")
+        for warning in summary.get("prune_warnings", []):
+            output(f"  Warning: {warning}")
+        return False, False, summary
+    except Exception as exc:
+        output(f"\nGLOBAL CATALOG SYNCHRONIZATION FAILED: {exc}")
+        output(
+            "  The catalog files were not intentionally left partially "
+            "updated; check the backups and XML/catalog consistency."
+        )
+        return False, True, None
+
+
+def collect_preflight_issues(records, transformed, options):
+    """Validate the post-transformation trees before any file is written."""
+    issues = []
+    roots = {}
+
+    for system_name in sorted(SYSTEMS, key=str.casefold):
+        record = records.get(system_name)
+        if record is None or record.get("status") != "OK":
+            detail = "; ".join(record.get("notes", [])) if record else ""
+            issues.append(
+                f"{system_name}: {detail or 'system folder/XML not readable'}"
+            )
+            continue
+        context = transformed.get(system_name)
+        roots[system_name] = (
+            context["root"] if context else record["root"]
         )
 
-        try:
-            summary = sync_catalog(
-                root_folder=root_folder,
-                root_dat=catalog_root,
-                fileinfo_path=catalog_counts,
-                system_names=list(SYSTEMS),
-                dry_run=False,
-            )
-            print("\nGLOBAL CATALOG SYNCHRONIZATION")
-            print(f"  Games indexed: {summary['games']}")
-            print(f"  root.dat backup: {summary['root_dat_backup']}")
-            print(f"  fileinfo backup: {summary['fileinfo_backup']}")
-            print("  Catalog validation: passed")
-        except Exception as exc:
-            print(f"\nGLOBAL CATALOG SYNCHRONIZATION FAILED: {exc}")
-            print(
-                "  The catalog files were not intentionally left partially "
-                "updated; check the backups and XML/catalog consistency."
-            )
-            catalog_sync_error = True
-        else:
-            catalog_sync_error = False
-
-    # Final report.
-    print("\n" + "=" * 84)
-    print("FINAL REPORT")
-    print("=" * 84)
-    print(f"Root: {root_folder}")
-    print(
-        "Mode: DRY RUN (no writes or deletions)"
-        if args.dry_run else "Mode: APPLY"
+    issues.extend(catalog_issues(roots, list(roots)))
+    catalog_root = options.root_dat or (options.root / "root.dat")
+    catalog_counts = (
+        options.fileinfo
+        or (options.root.parent / "cubegm" / "fileinfo")
     )
-    print("Features:")
-    print(f"  remove missing ROM entries : {'OFF' if args.skip_remove_missing else 'on'}")
-    print(f"  add new ROMs               : {'OFF' if args.skip_add else 'on'}")
-    print(f"  add missing <gameid>       : {'OFF' if args.skip_ids else 'on'}")
-    print(f"  normalize titles           : {'OFF' if args.skip_normalize else 'on'}")
-    print(f"  alphabetical sort          : {'OFF' if args.skip_sort else 'on'}")
-    print(f"  dedup                      : {args.dedup}")
-    print(f"  indent                     : {'OFF' if args.no_indent else 'on'}")
-    print(f"  xml declaration            : {args.xml_declaration}")
-    print(f"  force write                : {'on' if args.force_write else 'off'}")
+    issues.extend(catalog_file_issues(catalog_root, catalog_counts))
+    return issues
 
-    print(f"\nGLOBAL DUPLICATE <gameid> VALUES BEFORE CLEANUP: {len(duplicates)}")
-    if duplicates:
-        for _, occurrences in duplicates:
-            value = occurrences[0]["value"]
-            print(f"  Duplicate <gameid> {value!r}:")
-            for occurrence in occurrences:
-                print(f"    - {occurrence['label']}")
+
+def run(options: Options, *, output=print, ask=input) -> RunResult:
+    root_folder = options.root
+    if options.system is None:
+        records = read_system_xmls(
+            root_folder,
+            list(SYSTEMS),
+            show_spinner=options.show_spinner,
+        )
+        pool_records = records
     else:
-        print("  None found among readable selected systems.")
+        # Build the ID pool and duplicate report globally, but only transform
+        # the selected system. Catalog sync still rebuilds every system.
+        pool_records = read_system_xmls(
+            root_folder,
+            list(SYSTEMS),
+            show_spinner=options.show_spinner,
+        )
+        records = {options.system: pool_records[options.system]}
 
-    total_deduplicated = sum(
-        len(result["deduplicated"]) for result in results.values()
-    )
-    print(f"\nDUPLICATE ENTRIES REMOVED OR PLANNED: {total_deduplicated}")
+    existing_gameids, max_numeric_id, duplicates = collect_existing_ids(pool_records)
+    allocator = IdAllocator(existing_gameids, max_numeric_id)
+
+    results = {}
+    transformed = {}
+    for system_name in sorted(records, key=str.casefold):
+        result, context = transform_system(
+            system_name,
+            records[system_name],
+            options,
+            allocator,
+        )
+        results[system_name] = result
+        if context is not None:
+            transformed[system_name] = context
+
+    preflight_issues = []
+    if not options.skip_preflight:
+        preflight_issues = collect_preflight_issues(
+            pool_records, transformed, options
+        )
+    if preflight_issues:
+        output("\nCATALOG PREFLIGHT FAILED (no files were changed):")
+        for issue in preflight_issues:
+            output(f"  - {issue}")
+        return RunResult(
+            root_folder=root_folder,
+            options=options,
+            systems=results,
+            duplicates=duplicates,
+            catalog_skipped=True,
+            preflight_issues=preflight_issues,
+        )
 
     for system_name in sorted(results, key=str.casefold):
-        result = results[system_name]
-        print(f"\n{system_name} [{result['status']}]")
-        print(
-            f"  Added: {len(result['added'])} | "
-            f"Removed (missing ROM): {len(result['removed'])} | "
-            f"Deduplicated: {len(result['deduplicated'])} | "
-            f"Titles normalized: {len(result['normalized'])} | "
-            f"<gameid> added: {len(result['ids_added'])} | "
-            f"Orphan images: {len(result['orphans'])} | "
-            f"Deleted images: {len(result['deleted'])}"
-        )
-        print(
-            "  Alphabetical sorting needed: "
-            f"{'Yes' if result['sorted'] else 'No'}"
+        commit_system(
+            results[system_name],
+            transformed.get(system_name),
+            options,
+            output=output,
+            ask=ask,
         )
 
-        if result["backup"]:
-            print(f"  Backup: {result['backup'].name}")
+    catalog_skipped, catalog_sync_error, catalog_summary = run_catalog_sync(
+        options, root_folder, output=output
+    )
+
+    apply_backup_retention(
+        options,
+        root_folder,
+        records,
+        prune_catalog=not catalog_sync_error,
+        output=output,
+    )
+
+    return RunResult(
+        root_folder=root_folder,
+        options=options,
+        systems=results,
+        duplicates=duplicates,
+        catalog_skipped=catalog_skipped,
+        catalog_sync_error=catalog_sync_error,
+        catalog_summary=catalog_summary,
+    )
+
+
+def print_report(result: RunResult, *, output=print) -> None:
+    options = result.options
+    root_folder = result.root_folder
+    results = result.systems
+
+    output("\n" + "=" * 84)
+    output("FINAL REPORT")
+    output("=" * 84)
+    output(f"Root: {root_folder}")
+    output(
+        "Mode: DRY RUN (no writes or deletions)"
+        if options.dry_run else "Mode: APPLY"
+    )
+    output("Features:")
+    output(f"  remove missing ROM entries : {'OFF' if options.skip_remove_missing else 'on'}")
+    output(f"  add new ROMs               : {'OFF' if options.skip_add else 'on'}")
+    output(f"  add missing <gameid>       : {'OFF' if options.skip_ids else 'on'}")
+    output(f"  normalize titles           : {'OFF' if options.skip_normalize else 'on'}")
+    output(f"  alphabetical sort          : {'OFF' if options.skip_sort else 'on'}")
+    output(f"  dedup                      : {options.dedup}")
+    output(f"  indent                     : {'OFF' if not options.indent else 'on'}")
+    output(f"  xml declaration            : {options.xml_declaration}")
+    output(f"  force write                : {'on' if options.force_write else 'off'}")
+    if options.skip_preflight:
+        output("  catalog preflight          : OFF (--skip-preflight)")
+    if options.skip_catalog:
+        output("  catalog sync               : OFF (--skip-catalog)")
+
+    output(f"\nGLOBAL DUPLICATE <gameid> VALUES BEFORE CLEANUP: {len(result.duplicates)}")
+    if result.duplicates:
+        for _, occurrences in result.duplicates:
+            value = occurrences[0]["value"]
+            output(f"  Duplicate <gameid> {value!r}:")
+            for occurrence in occurrences:
+                output(f"    - {occurrence['label']}")
+    else:
+        output("  None found among readable selected systems.")
+
+    total_deduplicated = sum(
+        len(item["deduplicated"]) for item in results.values()
+    )
+    output(f"\nDUPLICATE ENTRIES REMOVED OR PLANNED: {total_deduplicated}")
+
+    for system_name in sorted(results, key=str.casefold):
+        item = results[system_name]
+        output(f"\n{system_name} [{item['status']}]")
+        output(
+            f"  Added: {len(item['added'])} | "
+            f"Removed (missing ROM): {len(item['removed'])} | "
+            f"Deduplicated: {len(item['deduplicated'])} | "
+            f"Titles normalized: {len(item['normalized'])} | "
+            f"<gameid> added: {len(item['ids_added'])} | "
+            f"Orphan images: {len(item['orphans'])} | "
+            f"Deleted images: {len(item['deleted'])}"
+        )
+        output(
+            "  Alphabetical sorting needed: "
+            f"{'Yes' if item['sorted'] else 'No'}"
+        )
+
+        if item["backup"]:
+            output(f"  Backup: {item['backup'].name}")
 
         report_lists = (
             ("Added games", "added", "+"),
@@ -1010,52 +1260,56 @@ def main():
         )
 
         for label, key, prefix in report_lists:
-            if result[key]:
-                print(f"  {label}:")
-                for item in result[key]:
-                    print(f"    {prefix} {item}")
+            if item[key]:
+                output(f"  {label}:")
+                for value in item[key]:
+                    output(f"    {prefix} {value}")
 
-        if result["deduplicated"]:
-            print("  Duplicate entries removed or planned:")
-            for item in result["deduplicated"]:
-                print(
-                    f"    - path={item['path']!r}, "
-                    f"gameid={item['gameid']!r}, "
-                    f"name={item['name']!r}"
+        if item["deduplicated"]:
+            output("  Duplicate entries removed or planned:")
+            for value in item["deduplicated"]:
+                output(
+                    f"    - path={value['path']!r}, "
+                    f"gameid={value['gameid']!r}, "
+                    f"name={value['name']!r}"
                 )
-                print(f"      Reason: {item['reason']}")
+                output(f"      Reason: {value['reason']}")
 
-        if result["orphans"]:
-            print("  Orphan images:")
-            for path in result["orphans"]:
-                print(f"    ? {path.name}")
+        if item["orphans"]:
+            output("  Orphan images:")
+            for path in item["orphans"]:
+                output(f"    ? {path.name}")
 
-        if result["deleted"]:
-            print("  Deleted images:")
-            for name in result["deleted"]:
-                print(f"    x {name}")
+        if item["deleted"]:
+            output("  Deleted images:")
+            for name in item["deleted"]:
+                output(f"    x {name}")
 
-        for note in result["notes"]:
-            print(f"  Note: {note}")
+        for note in item["notes"]:
+            output(f"  Note: {note}")
 
-    errors = (
-        sum(r["status"] == "ERROR" for r in results.values())
-        + int(locals().get("catalog_sync_error", False))
-    )
-    skipped = sum(r["status"] == "SKIPPED" for r in results.values())
-
-    print(
+    output(
         f"\nFinished: {len(results)} systems, "
-        f"{errors} errors, {skipped} skipped."
+        f"{result.errors} errors, {result.skipped} skipped."
     )
 
-    if args.system:
-        print(
+    if options.system:
+        output(
             "Note: --system limits duplicate checking and ID allocation "
             "to the selected system."
         )
 
-    return 1 if errors else 0
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    options = options_from_args(args)
+    if not options.root.is_dir():
+        parser.error(f"Root folder does not exist: {options.root}")
+
+    result = run(options)
+    print_report(result)
+    return result.exit_code
 
 
 if __name__ == "__main__":

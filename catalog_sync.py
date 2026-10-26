@@ -10,13 +10,13 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 
+from m15core import find_system_folder as _find_system_folder
+from m15core import get_text as _get_text
+from m15core import local_tag as _tag
+from m15core import next_backup_suffix, prune_backups
+from systems import FILEINFO_SYSTEM_ORDER
+
 # fileinfo fields: total, existing reserved field, then system counts in this order.
-FILEINFO_SYSTEM_ORDER = (
-    "arcade", "fbneo", "mame", "atari2600", "atari5200", "atari7800",
-    "atarilynx", "cps1", "cps2", "cps3", "pcengine", "nes", "nesh",
-    "gb", "sfc", "snes", "gbc", "gba", "genesis", "gamegear",
-    "megadrive", "ngpc", "psx",
-)
 MEMBER_LANGUAGES = {
     "fileinfo.001": "zh_CN",
     "fileinfo.002": "zh_TW",
@@ -24,25 +24,12 @@ MEMBER_LANGUAGES = {
 }
 
 
-def _tag(e):
-    return e.tag.rsplit("}", 1)[-1] if isinstance(e.tag, str) else ""
-
-
 def _text(e, tag):
-    for c in e:
-        if _tag(c) == tag:
-            return (c.text or "").strip()
-    return ""
+    return _get_text(e, tag)
 
 
 def _folder(root, name):
-    direct = root / name
-    if direct.is_dir():
-        return direct
-    for p in root.iterdir():
-        if p.is_dir() and p.name.casefold() == name.casefold():
-            return p
-    return None
+    return _find_system_folder(root, name)
 
 
 def _catalog_path(system, raw):
@@ -156,6 +143,80 @@ def _read_xml_catalog(root_folder, system_names):
     return games, counts
 
 
+def catalog_issues(roots, system_names):
+    """Return catalog-validation issues for in-memory gamelist roots.
+
+    ``roots`` maps system name to an ElementTree root (or None when the
+    system is missing or unreadable). The rules match _read_xml_catalog.
+    """
+    issues = []
+    ids_seen = {}
+    paths_seen = {}
+
+    for system in system_names:
+        root = roots.get(system)
+        if root is None:
+            issues.append(f"Missing or unreadable gamelist: {system}")
+            continue
+        if _tag(root) != "gameList":
+            issues.append(f"{system}: unexpected root <{_tag(root)}>")
+            continue
+
+        for index, entry in enumerate(root, 1):
+            if _tag(entry) != "game":
+                continue
+            raw_path = _text(entry, "path")
+            gameid = _text(entry, "gameid")
+            if not raw_path:
+                issues.append(f"{system}: game #{index} has no <path>")
+                continue
+            if not gameid.isdigit():
+                issues.append(
+                    f"{system}/{raw_path}: non-numeric <gameid> {gameid!r}"
+                )
+                continue
+            canonical_id = str(int(gameid))
+            label = f"{system}/{raw_path}"
+            if canonical_id in ids_seen:
+                issues.append(
+                    f"Duplicate gameid {gameid!r}: "
+                    f"{ids_seen[canonical_id]} and {label}"
+                )
+                continue
+            ids_seen[canonical_id] = label
+            key = _catalog_path(system, raw_path)
+            if key in paths_seen:
+                issues.append(f"Duplicate catalog path: {key}")
+                continue
+            paths_seen[key] = label
+
+    return issues
+
+
+def _fileinfo_fields(fileinfo_path):
+    fields = fileinfo_path.read_text(encoding="ascii").strip().split(",")
+    if len(fields) != 25 or any(not x.strip().isdigit() for x in fields):
+        raise ValueError(
+            "fileinfo must contain exactly 25 comma-separated "
+            "non-negative integers"
+        )
+    return fields
+
+
+def catalog_file_issues(root_dat, fileinfo_path):
+    """Return issues with the catalog files themselves (read-only)."""
+    issues = []
+    try:
+        _old_localized_titles(root_dat)
+    except Exception as exc:
+        issues.append(f"root.dat: {exc}")
+    try:
+        _fileinfo_fields(fileinfo_path)
+    except Exception as exc:
+        issues.append(f"fileinfo: {exc}")
+    return issues
+
+
 def _member_bytes(games, member, language, old_titles):
     lines = []
     for path in sorted(games, key=str.casefold):
@@ -171,6 +232,8 @@ def _member_bytes(games, member, language, old_titles):
             g["image"],
         )
         lines.append("\t".join(fields))
+    if not lines:
+        return b""
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
@@ -188,7 +251,14 @@ def _atomic_write(path, data):
             temp.unlink()
 
 
-def sync_catalog(root_folder, root_dat, fileinfo_path, system_names, dry_run=False):
+def sync_catalog(
+    root_folder,
+    root_dat,
+    fileinfo_path,
+    system_names,
+    dry_run=False,
+    keep_baks=0,
+):
     """Regenerate global catalogs from all XMLs; preserve old localized titles by ROM path."""
     root_folder = Path(root_folder).resolve()
     root_dat = Path(root_dat).resolve()
@@ -196,9 +266,7 @@ def sync_catalog(root_folder, root_dat, fileinfo_path, system_names, dry_run=Fal
     if not root_dat.is_file() or not fileinfo_path.is_file():
         raise FileNotFoundError(f"Expected both {root_dat} and {fileinfo_path}")
 
-    old_fields = fileinfo_path.read_text(encoding="ascii").strip().split(",")
-    if len(old_fields) != 25 or any(not x.strip().isdigit() for x in old_fields):
-        raise ValueError("fileinfo must contain exactly 25 comma-separated non-negative integers")
+    old_fields = _fileinfo_fields(fileinfo_path)
 
     old_titles = _old_localized_titles(root_dat)
     games, counts = _read_xml_catalog(root_folder, system_names)
@@ -226,24 +294,38 @@ def sync_catalog(root_folder, root_dat, fileinfo_path, system_names, dry_run=Fal
                 raise ValueError(f"Generated row count mismatch for {member}")
     new_info = ",".join(count_fields).encode("ascii")
 
+    unchanged = False
+    with zipfile.ZipFile(root_dat, "r") as existing:
+        existing_names = existing.namelist()
+        if (
+            existing_names == list(MEMBER_LANGUAGES)
+            and all(
+                existing.read(name) == members[name]
+                for name in MEMBER_LANGUAGES
+            )
+            and fileinfo_path.read_bytes() == new_info
+        ):
+            unchanged = True
+
     summary = {
         "games": len(games),
         "system_counts": dict(counts),
         "root_dat": str(root_dat),
         "fileinfo": str(fileinfo_path),
         "dry_run": dry_run,
+        "unchanged": unchanged,
+        "root_dat_backup": None,
+        "fileinfo_backup": None,
+        "pruned": 0,
+        "prune_warnings": [],
     }
-    if dry_run:
+    if dry_run or unchanged:
         return summary
 
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    rb = root_dat.with_name(f"{root_dat.name}.{stamp}.bak")
-    ib = fileinfo_path.with_name(f"{fileinfo_path.name}.{stamp}.bak")
-    n = 1
-    while rb.exists() or ib.exists():
-        rb = root_dat.with_name(f"{root_dat.name}.{stamp}_{n}.bak")
-        ib = fileinfo_path.with_name(f"{fileinfo_path.name}.{stamp}_{n}.bak")
-        n += 1
+    suffix = next_backup_suffix([root_dat, fileinfo_path], stamp)
+    rb = root_dat.with_name(f"{root_dat.name}.{stamp}{suffix}.bak")
+    ib = fileinfo_path.with_name(f"{fileinfo_path.name}.{stamp}{suffix}.bak")
     shutil.copy2(root_dat, rb)
     shutil.copy2(fileinfo_path, ib)
     try:
@@ -260,4 +342,16 @@ def sync_catalog(root_folder, root_dat, fileinfo_path, system_names, dry_run=Fal
         raise
     summary["root_dat_backup"] = str(rb)
     summary["fileinfo_backup"] = str(ib)
+
+    root_deleted, root_errors = prune_backups(
+        root_dat.parent, root_dat.name, keep_baks, protect=[rb]
+    )
+    info_deleted, info_errors = prune_backups(
+        fileinfo_path.parent,
+        fileinfo_path.name,
+        keep_baks,
+        protect=[ib],
+    )
+    summary["pruned"] = len(root_deleted) + len(info_deleted)
+    summary["prune_warnings"] = root_errors + info_errors
     return summary
