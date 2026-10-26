@@ -929,10 +929,16 @@ def run_catalog_sync(options, root_folder, *, output=print):
 
 def run(options: Options, *, output=print, ask=input) -> RunResult:
     root_folder = options.root
-    system_names = list(SYSTEMS) if options.system is None else [options.system]
-    records = read_system_xmls(root_folder, system_names)
+    if options.system is None:
+        records = read_system_xmls(root_folder, list(SYSTEMS))
+        pool_records = records
+    else:
+        # Build the ID pool and duplicate report globally, but only transform
+        # the selected system. Catalog sync still rebuilds every system.
+        pool_records = read_system_xmls(root_folder, list(SYSTEMS))
+        records = {options.system: pool_records[options.system]}
 
-    existing_gameids, max_numeric_id, duplicates = collect_existing_ids(records)
+    existing_gameids, max_numeric_id, duplicates = collect_existing_ids(pool_records)
     allocator = IdAllocator(existing_gameids, max_numeric_id)
 
     results = {}
