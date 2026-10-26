@@ -15,9 +15,11 @@ Writer options:
   --xml-declaration {et,double}   et = ElementTree default (single quotes),
                                   double = <?xml version="1.0" encoding="utf-8"?>
   --force-write           write even if nothing changed (round-trip test)
+  --keep-baks N           keep newest N backups per file (default 5, 0 = all)
 
 Shortcut:
   --roundtrip             all features off + force-write: parse and re-save only
+                          (the catalog is rewritten only if its content changed)
 """
 
 import argparse
@@ -38,6 +40,8 @@ from m15core import (
     get_child,
     get_text,
     local_tag,
+    next_backup_suffix,
+    prune_backups,
     set_child_text,
 )
 from systems import SYSTEMS
@@ -171,14 +175,8 @@ def make_entry(filename, gameid, profile):
 
 def timestamped_backup(xml_path):
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    candidate = xml_path.with_name(f"{xml_path.name}.{stamp}.bak")
-    suffix = 1
-    while candidate.exists():
-        candidate = xml_path.with_name(
-            f"{xml_path.name}.{stamp}_{suffix}.bak"
-        )
-        suffix += 1
-    return candidate
+    suffix = next_backup_suffix([xml_path], stamp)
+    return xml_path.with_name(f"{xml_path.name}.{stamp}{suffix}.bak")
 
 
 def safe_write_xml(tree, xml_path, indent=True, declaration="et"):
@@ -478,6 +476,7 @@ class Options:
     indent: bool = True
     xml_declaration: str = "et"
     force_write: bool = False
+    keep_baks: int = 5
 
 
 @dataclass
@@ -512,6 +511,13 @@ class RunResult:
     @property
     def exit_code(self) -> int:
         return 1 if self.errors else 0
+
+
+def _nonnegative_int(value):
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return number
 
 
 def build_parser():
@@ -567,6 +573,14 @@ def build_parser():
                              "double: <?xml version=\"1.0\" ...?>")
     writer.add_argument("--force-write", action="store_true",
                         help="Write XML even when nothing changed.")
+    writer.add_argument(
+        "--keep-baks",
+        type=_nonnegative_int,
+        default=5,
+        metavar="N",
+        help="Keep the newest N timestamped backups per file "
+             "(default: 5; 0 = keep all).",
+    )
     writer.add_argument("--roundtrip", action="store_true",
                         help="All features off + force-write (parse and "
                              "re-save only).")
@@ -601,6 +615,7 @@ def options_from_args(args) -> Options:
         indent=not args.no_indent,
         xml_declaration=args.xml_declaration,
         force_write=args.force_write,
+        keep_baks=args.keep_baks,
     )
 
 
@@ -827,6 +842,19 @@ def commit_system(result, context, options, *, output=print, ask=input):
             result["notes"].append(f"XML replacement failed: {exc}")
             return
 
+        deleted, errors = prune_backups(
+            context["xml_path"].parent,
+            context["xml_path"].name,
+            options.keep_baks,
+            protect=[result["backup"]],
+        )
+        if deleted:
+            result["notes"].append(
+                f"Pruned {len(deleted)} old XML backup(s)."
+            )
+        for error in errors:
+            result["notes"].append(error)
+
     delete_orphans_if_requested(
         result["system"], result, options, output=output, ask=ask
     )
@@ -939,6 +967,7 @@ def run_catalog_sync(options, root_folder, *, output=print):
             fileinfo_path=catalog_counts,
             system_names=list(SYSTEMS),
             dry_run=False,
+            keep_baks=options.keep_baks,
         )
         output("\nGLOBAL CATALOG SYNCHRONIZATION")
         output(f"  Games indexed: {summary['games']}")
@@ -947,7 +976,12 @@ def run_catalog_sync(options, root_folder, *, output=print):
         else:
             output(f"  root.dat backup: {summary['root_dat_backup']}")
             output(f"  fileinfo backup: {summary['fileinfo_backup']}")
+            pruned = summary.get("pruned", 0)
+            if pruned:
+                output(f"  Old catalog backups pruned: {pruned}")
         output("  Catalog validation: passed")
+        for warning in summary.get("prune_warnings", []):
+            output(f"  Warning: {warning}")
         return False, False, summary
     except Exception as exc:
         output(f"\nGLOBAL CATALOG SYNCHRONIZATION FAILED: {exc}")

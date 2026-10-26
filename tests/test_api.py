@@ -97,6 +97,7 @@ def test_gui_option_mapping_matches_cli_flags():
     app.orphans_var = Var(True)
     app.dedup_var = Var("path")
     app.decl_var = Var("double")
+    app.keep_baks_var = Var("3")
 
     options = app.build_manager_options("/tmp/roms", dry_run=False)
 
@@ -113,6 +114,7 @@ def test_gui_option_mapping_matches_cli_flags():
     assert options.indent is False
     assert options.xml_declaration == "double"
     assert options.force_write is True
+    assert options.keep_baks == 3
 
     preview = app.build_manager_options("/tmp/roms", dry_run=True)
     assert preview.delete_orphaned_images is False

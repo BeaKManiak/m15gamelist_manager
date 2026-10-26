@@ -235,6 +235,23 @@ class App:
         boxed("Delete orphan images", self.orphans_var,
               "Remove unreferenced images", 3, row=1)
 
+        backups = ttk.Frame(box)
+        backups.pack(fill="x", pady=(8, 0))
+        ttk.Label(backups, text="Keep backups:").pack(side="left")
+        self.keep_baks_var = tk.StringVar(value="5")
+        ttk.Spinbox(
+            backups,
+            from_=0,
+            to=99,
+            textvariable=self.keep_baks_var,
+            width=5,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Label(
+            backups,
+            text="per file (0 = keep all)",
+            foreground="#666",
+        ).pack(side="left", padx=(6, 0))
+
     def _build_actions(self, parent):
         box = ttk.LabelFrame(parent, text="Run", padding=8)
         box.pack(fill="x", pady=(10, 0))
@@ -442,6 +459,7 @@ class App:
             indent=self.indent_var.get(),
             xml_declaration=self.decl_var.get(),
             force_write=self.force_var.get(),
+            keep_baks=int(self.keep_baks_var.get() or 5),
         )
 
     def _run_manager_job(self, options, writer):
@@ -472,6 +490,7 @@ class App:
         args += ["--xml-declaration", self.decl_var.get()]
         if self.force_var.get():
             args.append("--force-write")
+        args += ["--keep-baks", self.keep_baks_var.get() or "5"]
         if self.orphans_var.get() and not dry_run:
             args.append("--delete-orphaned-images")
         else:

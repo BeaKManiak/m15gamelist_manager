@@ -211,7 +211,10 @@ def backup_names(system_dir: Path) -> list[str]:
     return sorted(
         path.name
         for path in system_dir.iterdir()
-        if path.is_file() and path.name.startswith("gamelist.xml.") and path.name.endswith(".bak")
+        if path.is_file()
+        and path.name.startswith("gamelist.xml.")
+        and path.name.endswith(".bak")
+        and not path.name.endswith(".recovery.bak")
     )
 
 

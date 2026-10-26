@@ -13,6 +13,7 @@ from pathlib import Path
 from m15core import find_system_folder as _find_system_folder
 from m15core import get_text as _get_text
 from m15core import local_tag as _tag
+from m15core import next_backup_suffix, prune_backups
 from systems import FILEINFO_SYSTEM_ORDER
 
 # fileinfo fields: total, existing reserved field, then system counts in this order.
@@ -226,7 +227,14 @@ def _atomic_write(path, data):
             temp.unlink()
 
 
-def sync_catalog(root_folder, root_dat, fileinfo_path, system_names, dry_run=False):
+def sync_catalog(
+    root_folder,
+    root_dat,
+    fileinfo_path,
+    system_names,
+    dry_run=False,
+    keep_baks=0,
+):
     """Regenerate global catalogs from all XMLs; preserve old localized titles by ROM path."""
     root_folder = Path(root_folder).resolve()
     root_dat = Path(root_dat).resolve()
@@ -289,13 +297,9 @@ def sync_catalog(root_folder, root_dat, fileinfo_path, system_names, dry_run=Fal
         return summary
 
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    rb = root_dat.with_name(f"{root_dat.name}.{stamp}.bak")
-    ib = fileinfo_path.with_name(f"{fileinfo_path.name}.{stamp}.bak")
-    n = 1
-    while rb.exists() or ib.exists():
-        rb = root_dat.with_name(f"{root_dat.name}.{stamp}_{n}.bak")
-        ib = fileinfo_path.with_name(f"{fileinfo_path.name}.{stamp}_{n}.bak")
-        n += 1
+    suffix = next_backup_suffix([root_dat, fileinfo_path], stamp)
+    rb = root_dat.with_name(f"{root_dat.name}.{stamp}{suffix}.bak")
+    ib = fileinfo_path.with_name(f"{fileinfo_path.name}.{stamp}{suffix}.bak")
     shutil.copy2(root_dat, rb)
     shutil.copy2(fileinfo_path, ib)
     try:
@@ -312,4 +316,16 @@ def sync_catalog(root_folder, root_dat, fileinfo_path, system_names, dry_run=Fal
         raise
     summary["root_dat_backup"] = str(rb)
     summary["fileinfo_backup"] = str(ib)
+
+    root_deleted, root_errors = prune_backups(
+        root_dat.parent, root_dat.name, keep_baks, protect=[rb]
+    )
+    info_deleted, info_errors = prune_backups(
+        fileinfo_path.parent,
+        fileinfo_path.name,
+        keep_baks,
+        protect=[ib],
+    )
+    summary["pruned"] = len(root_deleted) + len(info_deleted)
+    summary["prune_warnings"] = root_errors + info_errors
     return summary
