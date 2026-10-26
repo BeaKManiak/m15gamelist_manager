@@ -321,8 +321,8 @@ It reads all configured gamelists and validates that:
 **Validation is all-or-nothing:** if any check fails, no catalog file is written.
 
 The main utility also runs the same rules as a **preflight before writing any
-gamelist**, so a catalog-invalid collection fails without changing files. The
-post-write validation above remains in place.
+gamelist**, including the catalog file formats, so a catalog-invalid collection
+fails without changing files. The post-write validation above remains in place.
 
 ### Localization and counts
 
@@ -521,6 +521,7 @@ The run stopped before changing any files. Check the listed entries:
   unique across all systems.
 - Two entries cannot resolve to the same catalog path.
 - Every configured system folder must exist with a readable `gamelist.xml`.
+- `root.dat` and `fileinfo` must exist and match the documented formats.
 
 A dry run performs the same preflight, so you can iterate without touching the
 device.
