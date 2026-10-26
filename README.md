@@ -482,7 +482,7 @@ It produces, for each platform:
 
 | Artifact | Platform |
 |---|---|
-| `M15Manager-arm64.zip` | macOS, Apple Silicon |
+| `M15Manager-ARM64.zip` | macOS, Apple Silicon |
 | `M15Manager-windows.zip` | Windows |
 
 ### First-launch notes (unsigned apps)
