@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Tkinter GUI for the M15 ROM collection manager.
 
-A thin front-end over the existing command-line scripts:
+A thin front-end over the manager, restore, and backup-pruning APIs:
 
     gamelist_manager.py
     restore_gamelist.py
     delete_gamelist_backups.py
 
-Those scripts are used unmodified: this GUI builds an argument list, runs the
-script's ``main()`` on a background thread, and streams its output into a log
-window.
+The GUI calls their ``Options``/``run()`` or ``main()`` functions directly on a
+background thread and streams output into a log window. It does not patch
+``sys.argv``, ``sys.stdout``, or the process working directory.
 
 Standard library only (tkinter), Python 3.9+.
 """
@@ -428,10 +428,14 @@ class App:
             ):
                 return
 
-        args = self.build_manager_args(root, dry_run)
         self.log_append(
-            "\n=== gamelist_manager %s ===\n$ gamelist_manager.py %s\n"
-            % ("(dry run)" if dry_run else "(apply)", " ".join(args))
+            "\n=== gamelist_manager %s ===\nroot=%s system=%s dedup=%s\n"
+            % (
+                "(dry run)" if dry_run else "(apply)",
+                root,
+                self.selected_system() or "all",
+                self.dedup_var.get(),
+            )
         )
         options = self.build_manager_options(root, dry_run)
         label = "Applying changes..." if not dry_run else "Previewing..."
@@ -471,36 +475,6 @@ class App:
         result = gamelist_manager.run(options, output=writer.write)
         gamelist_manager.print_report(result, output=writer.write)
         return result.exit_code
-
-    def build_manager_args(self, root, dry_run):
-        args = ["--root", root]
-        system = self.selected_system()
-        if system:
-            args += ["--system", system]
-        if dry_run:
-            args.append("--dry-run")
-        if not self.remove_missing_var.get():
-            args.append("--skip-remove-missing")
-        if not self.add_var.get():
-            args.append("--skip-add")
-        if not self.ids_var.get():
-            args.append("--skip-ids")
-        if not self.normalize_var.get():
-            args.append("--skip-normalize")
-        if not self.sort_var.get():
-            args.append("--skip-sort")
-        args += ["--dedup", self.dedup_var.get()]
-        if not self.indent_var.get():
-            args.append("--no-indent")
-        args += ["--xml-declaration", self.decl_var.get()]
-        if self.force_var.get():
-            args.append("--force-write")
-        args += ["--keep-baks", self.keep_baks_var.get() or "5"]
-        if self.orphans_var.get() and not dry_run:
-            args.append("--delete-orphaned-images")
-        else:
-            args.append("--no-prompt")
-        return args
 
     def run_restore(self, dry_run):
         root = self.validate_root()
