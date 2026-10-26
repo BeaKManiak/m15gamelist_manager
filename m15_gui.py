@@ -444,6 +444,11 @@ class App:
     def build_manager_options(self, root, dry_run):
         system = self.selected_system()
         delete_orphans = self.orphans_var.get() and not dry_run
+        try:
+            keep_baks = int(str(self.keep_baks_var.get()).strip() or 5)
+        except (TypeError, ValueError):
+            keep_baks = 5
+        keep_baks = max(0, keep_baks)
         return gamelist_manager.Options(
             root=Path(root),
             system=system,
@@ -459,7 +464,7 @@ class App:
             indent=self.indent_var.get(),
             xml_declaration=self.decl_var.get(),
             force_write=self.force_var.get(),
-            keep_baks=int(self.keep_baks_var.get() or 5),
+            keep_baks=keep_baks,
         )
 
     def _run_manager_job(self, options, writer):
