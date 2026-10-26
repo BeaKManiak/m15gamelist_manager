@@ -24,14 +24,30 @@ BACKUP_PATTERN = re.compile(
     r"\.bak$"
 )
 
+CATALOG_BACKUP_PATTERN = re.compile(
+    r"^(?:root\.dat|fileinfo)\."
+    r"\d{8}_\d{6}"
+    r"(?:_\d+)?"
+    r"(?:\.recovery)?"
+    r"\.bak$"
+)
 
-def find_backups(root: Path, recursive: bool):
+
+def find_backups(root: Path, recursive: bool, pattern=BACKUP_PATTERN):
     """Find matching backup files."""
     iterator = root.rglob("*") if recursive else root.glob("*")
 
     for path in iterator:
-        if path.is_file() and BACKUP_PATTERN.fullmatch(path.name):
+        if path.is_file() and pattern.fullmatch(path.name):
             yield path
+
+
+def find_catalog_backups(root_dat: Path, fileinfo_path: Path):
+    """Find root.dat and fileinfo backups."""
+    for target in (root_dat, fileinfo_path):
+        for path in target.parent.glob(f"{target.name}.*.bak"):
+            if path.is_file() and CATALOG_BACKUP_PATTERN.fullmatch(path.name):
+                yield path
 
 
 def main(argv=None, root=None, *, output=print) -> int:
@@ -58,6 +74,21 @@ def main(argv=None, root=None, *, output=print) -> int:
         "--system",
         help="Limit operation to one system folder, e.g. snes or gb.",
     )
+    parser.add_argument(
+        "--catalog",
+        action="store_true",
+        help="Also delete root.dat and fileinfo backups.",
+    )
+    parser.add_argument(
+        "--root-dat",
+        type=Path,
+        help="Path to root.dat (default: <root>/root.dat).",
+    )
+    parser.add_argument(
+        "--fileinfo",
+        type=Path,
+        help="Path to fileinfo (default: <root>/../cubegm/fileinfo).",
+    )
 
     args = parser.parse_args(argv)
     root = Path.cwd().resolve() if root is None else Path(root).expanduser().resolve()
@@ -79,7 +110,12 @@ def main(argv=None, root=None, *, output=print) -> int:
     else:
         search_root = root
 
-    backups = sorted(find_backups(search_root, args.recursive))
+    backups = set(find_backups(search_root, args.recursive))
+    if args.catalog:
+        root_dat = args.root_dat or (root / "root.dat")
+        fileinfo_path = args.fileinfo or (root.parent / "cubegm" / "fileinfo")
+        backups.update(find_catalog_backups(root_dat, fileinfo_path))
+    backups = sorted(backups)
 
     output(f"Root: {root}")
     output(f"Search directory: {search_root}")
@@ -87,7 +123,7 @@ def main(argv=None, root=None, *, output=print) -> int:
     output(f"Matching backups: {len(backups)}")
 
     if not backups:
-        output("No matching gamelist backups found.")
+        output("No matching backups found.")
         return 0
 
     deleted = 0

@@ -9,10 +9,12 @@ def test_cli_modules_import():
     import catalog_sync
     import delete_gamelist_backups
     import gamelist_manager
+    import restore_catalog
     import restore_gamelist
 
     assert callable(gamelist_manager.main)
     assert callable(catalog_sync.sync_catalog)
+    assert callable(restore_catalog.main)
     assert callable(restore_gamelist.main)
     assert callable(delete_gamelist_backups.main)
     assert len(gamelist_manager.SYSTEMS) == 23

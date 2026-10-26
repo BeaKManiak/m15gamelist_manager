@@ -52,7 +52,8 @@ python3 -c "import catalog_sync, gamelist_manager, m15core, systems; print('ok')
 | `m15core.py` | Shared XML, folder-lookup, and backup-retention helpers. |
 | `systems.py` | System registry and the device's `FILEINFO_SYSTEM_ORDER`. |
 | `restore_gamelist.py` | Restores a system's `gamelist.xml` from the newest valid timestamped backup. |
-| `delete_gamelist_backups.py` | Finds and deletes matching timestamped gamelist backups, with a dry-run option. |
+| `restore_catalog.py` | Restores `root.dat` + `fileinfo` from the newest valid matching backup pair. |
+| `delete_gamelist_backups.py` | Finds and deletes matching timestamped backups, with a dry-run option. |
 | `m15_gui.py` | Optional Tkinter desktop GUI. It is the released desktop app. |
 | `tests/` | Pytest fixtures and characterization/regression tests. |
 | `pyproject.toml`, `requirements-dev.txt` | Test and lint configuration (development only). |
@@ -83,6 +84,7 @@ main script uses its own directory as the ROM root.
     ├── m15core.py
     ├── systems.py
     ├── restore_gamelist.py
+    ├── restore_catalog.py
     ├── delete_gamelist_backups.py
     ├── README.md
     ├── root.dat                 # ZIP: fileinfo.001/.002/.003
@@ -278,6 +280,8 @@ Per system, subject to the selected options:
     BOM preserved), keeping the newest `--keep-baks` backups.
 11. After all systems, rebuilds `root.dat` and `fileinfo` (unless `--dry-run`).
     An unchanged catalog is not rewritten and creates no backup.
+12. Enforces `--keep-baks` across XML and catalog backups, including files that
+    were not rewritten in this run.
 
 New entries get a generated game ID, a `<path>`, an image path
 `./images/<rom-filename-without-extension>.png`, system-specific metadata
@@ -380,22 +384,45 @@ python3 restore_gamelist.py --recursive
 > — which is normal when some system folders have no backups yet, even if every
 > actual restore succeeded.
 
+## Restoring the catalog: `restore_catalog.py`
+
+Restores `root.dat` and `fileinfo` together from the newest valid matching
+timestamped backup pair.
+
+```bash
+python3 restore_catalog.py --dry-run      # preview
+python3 restore_catalog.py                # restore
+```
+
+- Pairs backups by timestamp and sequence number.
+- Skips pairs where either file is missing or fails catalog validation.
+- Saves the current `root.dat` and `fileinfo` as `*.recovery.bak` first.
+- Rolls back both files if the restored pair fails validation.
+
+The GUI has matching **Restore catalog (preview)** and **Restore catalog**
+buttons.
+
 ## Deleting old backups: `delete_gamelist_backups.py`
 
 ```bash
 python3 delete_gamelist_backups.py --dry-run       # preview (recommended)
-python3 delete_gamelist_backups.py                 # delete in cwd
+python3 delete_gamelist_backups.py                 # XML backups in cwd
 python3 delete_gamelist_backups.py --system nes
 python3 delete_gamelist_backups.py --recursive
+python3 delete_gamelist_backups.py --catalog       # also root.dat/fileinfo
 ```
 
 Matches timestamped `gamelist.xml` backups, including numbered variants **and**
 `.recovery.bak` files. **Deletion is the default behavior**, so always inspect
 with `--dry-run` first.
 
-The main utility prunes only its own timestamped XML/catalog backups according
-to `--keep-baks`; it never deletes `.recovery.bak` files. Use this tool when you
-want to remove those too.
+`--catalog` also deletes `root.dat.*.bak` and `fileinfo.*.bak` backups. It is
+independent of `--system`; catalog backups are global.
+
+The main utility prunes its own timestamped XML/catalog backups according to
+`--keep-baks` after every apply, including files that did not change in that run.
+It never deletes `.recovery.bak` files. Use this tool when you want to remove
+those too.
 
 ## Recommended workflow
 
@@ -444,8 +471,9 @@ It provides, for the selected ROM folder:
 - Checkboxes mirroring every feature switch (remove missing, add, IDs, normalize,
   sort, indent, force write, delete orphan images).
 - A **Keep backups** control matching `--keep-baks` (`0` keeps all).
-- **Preview (dry run)** and **Apply** buttons, plus **Restore gamelist** and
-  **Delete backups** with preview variants.
+- **Preview (dry run)** and **Apply** buttons, plus **Restore gamelist**,
+  **Restore catalog**, and **Delete backups** with preview variants. The delete
+  dialog can include catalog backups.
 - A live output log and an auto-detected ROM folder (looks for `root.dat` plus
   system folders under `/Volumes`).
 
@@ -546,7 +574,12 @@ Check that:
 - No catalog paths are duplicated.
 
 If the catalog step fails after the XMLs were written, the gamelists are newer
-than `root.dat`/`fileinfo`. Restore the backups reported in the output.
+than `root.dat`/`fileinfo`. Restore the backups reported in the output, or use:
+
+```bash
+python3 restore_catalog.py --dry-run
+python3 restore_catalog.py
+```
 
 ### A ROM is not added
 

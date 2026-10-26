@@ -147,6 +147,73 @@ def test_default_keep_baks_is_five(make_collection_factory):
     assert len(backup_names(collection.system_dir("nes"))) == 5
 
 
+def test_noop_run_enforces_retention(make_collection_factory):
+    collection = make_collection_factory()
+    system = collection.system_dir("nes")
+    for index in range(7):
+        stamp = f"20200101_00000{index}"
+        touch_backup(system, "gamelist.xml", stamp)
+        touch_backup(collection.root, "root.dat", stamp)
+        touch_backup(collection.catalog_dir, "fileinfo", stamp)
+
+    result = gamelist_manager.run(
+        gamelist_manager.Options(
+            root=collection.root, system="nes", keep_baks=2
+        ),
+        output=lambda _text: None,
+    )
+
+    assert result.exit_code == 0
+    assert len(backup_names(system)) == 2
+    assert len(list(collection.root.glob("root.dat.*.bak"))) == 2
+    assert len(list(collection.catalog_dir.glob("fileinfo.*.bak"))) == 2
+
+
+def test_noop_dry_run_does_not_prune(make_collection_factory):
+    collection = make_collection_factory()
+    system = collection.system_dir("nes")
+    for index in range(7):
+        touch_backup(system, "gamelist.xml", f"20200101_00000{index}")
+
+    result = gamelist_manager.run(
+        gamelist_manager.Options(
+            root=collection.root,
+            system="nes",
+            keep_baks=2,
+            dry_run=True,
+        ),
+        output=lambda _text: None,
+    )
+
+    assert result.exit_code == 0
+    assert len(backup_names(system)) == 7
+
+
+def test_skip_catalog_does_not_prune_catalog_backups(make_collection_factory):
+    collection = make_collection_factory()
+    system = collection.system_dir("nes")
+    for index in range(7):
+        stamp = f"20200101_00000{index}"
+        touch_backup(system, "gamelist.xml", stamp)
+        touch_backup(collection.root, "root.dat", stamp)
+        touch_backup(collection.catalog_dir, "fileinfo", stamp)
+
+    result = gamelist_manager.run(
+        gamelist_manager.Options(
+            root=collection.root,
+            system="nes",
+            keep_baks=2,
+            skip_catalog=True,
+        ),
+        output=lambda _text: None,
+    )
+
+    assert result.exit_code == 0
+    assert len(backup_names(system)) == 2
+    assert len(list(collection.root.glob("root.dat.*.bak"))) == 7
+    assert len(list(collection.catalog_dir.glob("fileinfo.*.bak"))) == 7
+
+
 def test_options_default_keep_baks():
     assert gamelist_manager.Options(root=".").keep_baks == 5
 

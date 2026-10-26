@@ -987,6 +987,47 @@ def delete_orphans_if_requested(
                 )
 
 
+def catalog_paths(options, root_folder):
+    return (
+        options.root_dat or (root_folder / "root.dat"),
+        options.fileinfo or (root_folder.parent / "cubegm" / "fileinfo"),
+    )
+
+
+def apply_backup_retention(
+    options, root_folder, records, *, prune_catalog=True, output=print
+):
+    """Enforce --keep-baks even when a file was not rewritten this run."""
+    if options.dry_run or options.keep_baks <= 0:
+        return
+    deleted = 0
+    errors = []
+    for record in records.values():
+        if record.get("status") != "OK":
+            continue
+        folder = record.get("folder")
+        if folder is None:
+            continue
+        removed, problems = prune_backups(
+            folder, "gamelist.xml", options.keep_baks
+        )
+        deleted += len(removed)
+        errors.extend(problems)
+    if not options.skip_catalog and prune_catalog:
+        root_dat, fileinfo_path = catalog_paths(options, root_folder)
+        for path in (root_dat, fileinfo_path):
+            if path.parent.is_dir():
+                removed, problems = prune_backups(
+                    path.parent, path.name, options.keep_baks
+                )
+                deleted += len(removed)
+                errors.extend(problems)
+    if deleted:
+        output(f"\nBackup retention: pruned {deleted} old backup(s).")
+    for error in errors:
+        output(f"  Warning: {error}")
+
+
 def run_catalog_sync(options, root_folder, *, output=print):
     if options.skip_catalog:
         output(
@@ -1000,11 +1041,7 @@ def run_catalog_sync(options, root_folder, *, output=print):
         )
         return True, False, None
 
-    catalog_root = options.root_dat or (root_folder / "root.dat")
-    catalog_counts = (
-        options.fileinfo
-        or (root_folder.parent / "cubegm" / "fileinfo")
-    )
+    catalog_root, catalog_counts = catalog_paths(options, root_folder)
 
     try:
         summary = sync_catalog(
@@ -1130,6 +1167,14 @@ def run(options: Options, *, output=print, ask=input) -> RunResult:
 
     catalog_skipped, catalog_sync_error, catalog_summary = run_catalog_sync(
         options, root_folder, output=output
+    )
+
+    apply_backup_retention(
+        options,
+        root_folder,
+        records,
+        prune_catalog=not catalog_sync_error,
+        output=output,
     )
 
     return RunResult(

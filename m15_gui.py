@@ -29,6 +29,7 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 import gamelist_manager
+import restore_catalog
 import restore_gamelist
 import delete_gamelist_backups
 
@@ -251,6 +252,12 @@ class App:
             text="per file (0 = keep all)",
             foreground="#666",
         ).pack(side="left", padx=(6, 0))
+        self.catalog_backups_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            backups,
+            text="Also delete catalog backups",
+            variable=self.catalog_backups_var,
+        ).pack(side="left", padx=(18, 0))
 
     def _build_actions(self, parent):
         box = ttk.LabelFrame(parent, text="Run", padding=8)
@@ -297,6 +304,19 @@ class App:
             command=lambda: self.run_prune(dry_run=False),
         )
         self.prune_btn.pack(side="left", padx=(8, 0))
+
+        row3 = ttk.Frame(box)
+        row3.pack(fill="x", pady=(8, 0))
+        self.catalog_restore_preview_btn = ttk.Button(
+            row3, text="Restore catalog (preview)",
+            command=lambda: self.run_catalog_restore(dry_run=True),
+        )
+        self.catalog_restore_preview_btn.pack(side="left")
+        self.catalog_restore_btn = ttk.Button(
+            row3, text="Restore catalog",
+            command=lambda: self.run_catalog_restore(dry_run=False),
+        )
+        self.catalog_restore_btn.pack(side="left", padx=(8, 0))
 
         ttk.Label(
             box,
@@ -347,6 +367,7 @@ class App:
         for btn in (
             self.preview_btn, self.apply_btn, self.restore_preview_btn,
             self.restore_btn, self.prune_preview_btn, self.prune_btn,
+            self.catalog_restore_preview_btn, self.catalog_restore_btn,
         ):
             btn.configure(state=state)
         if busy:
@@ -519,14 +540,21 @@ class App:
         if not dry_run and not messagebox.askyesno(
             "Delete backups",
             "Permanently delete timestamped gamelist backups "
-            "(including *.recovery.bak) in this folder?\n\n"
-            "This cannot be undone.",
+            "(including *.recovery.bak) in this folder"
+            + (
+                " and the root.dat/fileinfo backups"
+                if self.catalog_backups_var.get()
+                else ""
+            )
+            + "?\n\nThis cannot be undone.",
         ):
             return
         args = []
         system = self.selected_system()
         if system:
             args += ["--system", system]
+        if self.catalog_backups_var.get():
+            args.append("--catalog")
         if dry_run:
             args.append("--dry-run")
         self.log_append(
@@ -538,6 +566,33 @@ class App:
                 args, root=root, output=writer.write
             ),
             "Deleting backups..." if not dry_run else "Listing backups...",
+            preview=dry_run,
+        )
+
+    def run_catalog_restore(self, dry_run):
+        root = self.validate_root()
+        if not root:
+            messagebox.showerror(
+                "No folder", "Select the ROM collection folder first."
+            )
+            return
+        if not dry_run and not messagebox.askyesno(
+            "Restore catalog",
+            "Replace root.dat and fileinfo with the newest valid matching "
+            "backup pair? The current files are saved as *.recovery.bak "
+            "first.",
+        ):
+            return
+        args = ["--dry-run"] if dry_run else []
+        self.log_append(
+            "\n=== restore_catalog %s ===\n"
+            % ("(dry run)" if dry_run else "(restore)")
+        )
+        self.run_direct(
+            lambda writer: restore_catalog.main(
+                args, root=root, output=writer.write
+            ),
+            "Restoring catalog..." if not dry_run else "Previewing catalog...",
             preview=dry_run,
         )
 

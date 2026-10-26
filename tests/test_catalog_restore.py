@@ -408,6 +408,48 @@ def test_sync_catalog_changed_content_writes_again(make_collection_factory):
     assert len(list(collection.root.glob("root.dat.*.bak"))) == backup_count + 1
 
 
+def test_prune_catalog_backups(make_collection_factory, monkeypatch, capsys):
+    collection = make_collection_factory()
+    for index in range(3):
+        stamp = f"20200101_00000{index}"
+        (collection.root / f"root.dat.{stamp}.bak").write_bytes(b"x")
+        (collection.catalog_dir / f"fileinfo.{stamp}.bak").write_bytes(b"x")
+    monkeypatch.chdir(collection.root)
+
+    assert run_prune(monkeypatch, "--catalog", "--dry-run") == 0
+    assert len(list(collection.root.glob("root.dat.*.bak"))) == 3
+    assert "WOULD DELETE" in capsys.readouterr().out
+
+    assert run_prune(monkeypatch, "--catalog") == 0
+    assert list(collection.root.glob("root.dat.*.bak")) == []
+    assert list(collection.catalog_dir.glob("fileinfo.*.bak")) == []
+    assert "Deleted: 6" in capsys.readouterr().out
+
+
+def test_prune_default_leaves_catalog_backups(make_collection_factory, monkeypatch):
+    collection = make_collection_factory()
+    (collection.root / "root.dat.20200101_000000.bak").write_bytes(b"x")
+    (collection.catalog_dir / "fileinfo.20200101_000000.bak").write_bytes(b"x")
+    monkeypatch.chdir(collection.root)
+
+    assert run_prune(monkeypatch) == 0
+    assert (collection.root / "root.dat.20200101_000000.bak").exists()
+    assert (collection.catalog_dir / "fileinfo.20200101_000000.bak").exists()
+
+
+def test_prune_catalog_with_system_scope(make_collection_factory, monkeypatch):
+    collection = make_collection_factory()
+    (collection.root / "root.dat.20200101_000000.bak").write_bytes(b"x")
+    (collection.catalog_dir / "fileinfo.20200101_000000.bak").write_bytes(b"x")
+    other = write_backup(collection.system_dir("nes"), "20200101_000000")
+    monkeypatch.chdir(collection.root)
+
+    assert run_prune(monkeypatch, "--system", "nes", "--catalog") == 0
+    assert not other.exists()
+    assert not (collection.root / "root.dat.20200101_000000.bak").exists()
+    assert not (collection.catalog_dir / "fileinfo.20200101_000000.bak").exists()
+
+
 def test_catalog_fileinfo_field_two_is_preserved(make_collection_factory):
     collection = make_collection_factory(
         games={"nes": [make_game({"gameid": "1", "path": "./foo.zip"})]},
