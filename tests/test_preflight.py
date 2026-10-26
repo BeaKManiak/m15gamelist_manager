@@ -136,6 +136,24 @@ def test_dry_run_reports_preflight_errors_without_writing(make_collection_factor
     assert "CATALOG PREFLIGHT FAILED" in "\n".join(lines)
 
 
+def test_missing_catalog_files_fail_preflight(make_collection_factory):
+    collection = make_collection_factory()
+    collection.root_dat.unlink()
+    collection.fileinfo.unlink()
+
+    result = gamelist_manager.run(
+        gamelist_manager.Options(
+            root=collection.root, system="nes", dry_run=True
+        ),
+        output=lambda _text: None,
+    )
+
+    assert result.exit_code == 1
+    text = "\n".join(result.preflight_issues)
+    assert "root.dat:" in text
+    assert "fileinfo:" in text
+
+
 def test_valid_run_still_writes_and_syncs_catalog(make_collection_factory):
     collection = make_collection_factory(rom_files={"nes": ["Mario.zip"]})
 

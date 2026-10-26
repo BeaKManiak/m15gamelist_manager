@@ -193,6 +193,30 @@ def catalog_issues(roots, system_names):
     return issues
 
 
+def _fileinfo_fields(fileinfo_path):
+    fields = fileinfo_path.read_text(encoding="ascii").strip().split(",")
+    if len(fields) != 25 or any(not x.strip().isdigit() for x in fields):
+        raise ValueError(
+            "fileinfo must contain exactly 25 comma-separated "
+            "non-negative integers"
+        )
+    return fields
+
+
+def catalog_file_issues(root_dat, fileinfo_path):
+    """Return issues with the catalog files themselves (read-only)."""
+    issues = []
+    try:
+        _old_localized_titles(root_dat)
+    except Exception as exc:
+        issues.append(f"root.dat: {exc}")
+    try:
+        _fileinfo_fields(fileinfo_path)
+    except Exception as exc:
+        issues.append(f"fileinfo: {exc}")
+    return issues
+
+
 def _member_bytes(games, member, language, old_titles):
     lines = []
     for path in sorted(games, key=str.casefold):
@@ -242,9 +266,7 @@ def sync_catalog(
     if not root_dat.is_file() or not fileinfo_path.is_file():
         raise FileNotFoundError(f"Expected both {root_dat} and {fileinfo_path}")
 
-    old_fields = fileinfo_path.read_text(encoding="ascii").strip().split(",")
-    if len(old_fields) != 25 or any(not x.strip().isdigit() for x in old_fields):
-        raise ValueError("fileinfo must contain exactly 25 comma-separated non-negative integers")
+    old_fields = _fileinfo_fields(fileinfo_path)
 
     old_titles = _old_localized_titles(root_dat)
     games, counts = _read_xml_catalog(root_folder, system_names)

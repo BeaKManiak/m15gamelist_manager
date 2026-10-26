@@ -36,7 +36,7 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from catalog_sync import catalog_issues, sync_catalog
+from catalog_sync import catalog_file_issues, catalog_issues, sync_catalog
 from m15core import (
     find_system_folder as _find_system_folder,
     get_child,
@@ -994,7 +994,7 @@ def run_catalog_sync(options, root_folder, *, output=print):
         return False, True, None
 
 
-def collect_preflight_issues(records, transformed):
+def collect_preflight_issues(records, transformed, options):
     """Validate the post-transformation trees before any file is written."""
     issues = []
     roots = {}
@@ -1013,6 +1013,12 @@ def collect_preflight_issues(records, transformed):
         )
 
     issues.extend(catalog_issues(roots, list(roots)))
+    catalog_root = options.root_dat or (options.root / "root.dat")
+    catalog_counts = (
+        options.fileinfo
+        or (options.root.parent / "cubegm" / "fileinfo")
+    )
+    issues.extend(catalog_file_issues(catalog_root, catalog_counts))
     return issues
 
 
@@ -1043,7 +1049,7 @@ def run(options: Options, *, output=print, ask=input) -> RunResult:
         if context is not None:
             transformed[system_name] = context
 
-    preflight_issues = collect_preflight_issues(pool_records, transformed)
+    preflight_issues = collect_preflight_issues(pool_records, transformed, options)
     if preflight_issues:
         output("\nCATALOG PREFLIGHT FAILED (no files were changed):")
         for issue in preflight_issues:
