@@ -13,14 +13,9 @@ from pathlib import Path
 from m15core import find_system_folder as _find_system_folder
 from m15core import get_text as _get_text
 from m15core import local_tag as _tag
+from systems import FILEINFO_SYSTEM_ORDER
 
 # fileinfo fields: total, existing reserved field, then system counts in this order.
-FILEINFO_SYSTEM_ORDER = (
-    "arcade", "fbneo", "mame", "atari2600", "atari5200", "atari7800",
-    "atarilynx", "cps1", "cps2", "cps3", "pcengine", "nes", "nesh",
-    "gb", "sfc", "snes", "gbc", "gba", "genesis", "gamegear",
-    "megadrive", "ngpc", "psx",
-)
 MEMBER_LANGUAGES = {
     "fileinfo.001": "zh_CN",
     "fileinfo.002": "zh_TW",
