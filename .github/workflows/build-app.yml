@@ -187,6 +187,7 @@ jobs:
             --name "M15Manager" \
             --osx-bundle-identifier "com.m15.rommanager" \
             --add-data "README.md:." \
+            --add-data "docs:docs" \
             m15_gui.py
           # Ad-hoc signature: removes "damaged app" errors for most users.
           # Real distribution needs an Apple Developer ID + notarization.
@@ -201,7 +202,8 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed `
             --name "M15Manager" `
-            --add-data "README.md;." m15_gui.py
+            --add-data "README.md;." `
+            --add-data "docs;docs" m15_gui.py
           Compress-Archive -Path "dist/M15Manager.exe" `
             -DestinationPath "dist/M15Manager-windows.zip" -Force
 

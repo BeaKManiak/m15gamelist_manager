@@ -1,4 +1,8 @@
-# Handoff plan (for an implementing agent, not this session)
+# Handoff plan (historical)
+
+> This is the original refactor plan, kept for project history. For current
+> behavior and usage, start with the [main README](../README.md) and
+> [documentation index](README.md).
 
 Repo: BeaKManiak/m15gamelist_manager (branch from `main`). Stdlib-only Python 3.8+; tkinter GUI (`m15_gui.py`) calls `gamelist_manager.main()` in a thread. Files: `gamelist_manager.py` (1061 lines), `m15_gui.py` (615), `catalog_sync.py` (263), `restore_gamelist.py` (261), `delete_gamelist_backups.py` (126), `.github/workflows/build-app.yml`.
 

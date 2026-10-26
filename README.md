@@ -1,505 +1,134 @@
 # M15 ROM Collection Manager
 
-A set of standard-library Python utilities for maintaining the ROM library of an
-**M15** retro handheld: editing per-system `gamelist.xml` files, rebuilding the
-device catalog (`root.dat` and `cubegm/fileinfo`), and managing backups and
-restoration.
+[![CI](https://github.com/BeaKManiak/m15gamelist_manager/actions/workflows/ci.yml/badge.svg)](https://github.com/BeaKManiak/m15gamelist_manager/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/BeaKManiak/m15gamelist_manager?label=release)](https://github.com/BeaKManiak/m15gamelist_manager/releases/latest)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 
-The tools scan system folders, add newly discovered ROMs, remove entries for
-missing files, normalize metadata, deduplicate, sort, and keep the device catalog
-synchronized. The main script is heavily switchable on purpose — the M15 is fussy
-about which change broke it, so each behavior can be toggled to bisect a problem.
+Keep the ROM library, per-system gamelists, and device catalog of an **M15 retro
+handheld** in sync.
 
-## Features
+The app scans system folders, adds newly discovered ROMs, removes entries whose
+files disappeared, normalizes metadata, deduplicates, sorts, and rebuilds
+`root.dat` + `cubegm/fileinfo`. A desktop GUI is the recommended way to use it;
+the CLI is there for scripting and debugging.
 
-- **Automatic ROM scanning:** detect supported ROM files in configured system
-  directories (non-recursive; `._*` sidecars ignored).
-- **Gamelist management:** add missing games and remove entries whose ROM files
-  no longer exist.
-- **Metadata normalization:** assign missing game IDs and strip numeric prefixes
-  from language-specific name fields.
-- **Duplicate removal:** dedupe by ROM path, game ID, both, or neither.
-- **Sorting:** sort entries alphabetically by `<name>`.
-- **Orphaned image handling:** report images no longer referenced by any entry and
-  optionally delete them.
-- **XML safety:** validate before/after writing, preserve an existing BOM, write
-  via temp files, and back up first.
-- **Catalog synchronization:** rebuild `root.dat` and `fileinfo` from the
-  gamelists.
-- **Backup utilities:** preview or delete old backups, and restore a gamelist from
-  a valid backup with automatic rollback.
+## Download
+
+Grab the latest release from
+[**Releases**](https://github.com/BeaKManiak/m15gamelist_manager/releases/latest).
+
+| Platform | Download |
+|---|---|
+| macOS, Apple Silicon | `M15Manager-ARM64.zip` |
+| Windows | `M15Manager-windows.zip` |
+
+**No Python installation is required.** The app is self-contained.
+
+The builds are not notarized and are not signed with a trusted certificate, so
+the first launch shows a warning. See [Install](docs/install.md) for the macOS
+and Windows steps.
+
+## Quick start
+
+1. Connect the M15 storage and note the folder that contains `root.dat` and the
+   system folders (usually `roms`).
+2. Open **M15Manager** and select that folder.
+3. Click **Preview (dry run)** first.
+4. Review the log. A catalog preflight failure means nothing was written; fix the
+   reported entries and try again.
+5. Click **Apply changes**.
+6. Eject safely and verify the library on the device.
+
+A dry run never writes, deletes, or creates backups.
+
+## What it does
+
+- **Scans ROM folders** for supported files, non-recursively.
+- **Maintains gamelists**: adds new ROMs and removes entries for missing files.
+- **Normalizes metadata**: assigns game IDs and strips numeric title prefixes.
+- **Deduplicates and sorts** entries.
+- **Handles orphaned images**: reports them and deletes only when asked.
+- **Rebuilds the device catalog** (`root.dat` and `cubegm/fileinfo`).
+- **Writes safely**: validates before and after writing, preserves BOMs, creates
+  timestamped backups, and rolls back on failure.
+- **Restores backups** for both gamelists and the catalog.
+
+## The 30-second layout
+
+```text
+M15 storage/
+├── cubegm/
+│   └── fileinfo                 # 25 counters used by the device
+└── roms/                        # select this folder in the GUI
+    ├── root.dat                 # device catalog
+    ├── arcade/
+    │   ├── gamelist.xml
+    │   ├── images/
+    │   └── *.zip
+    └── ...
+```
+
+The GUI assumes this standard layout. Full details and the supported-system table
+are in [Device layout](docs/device-layout.md).
+
+## GUI
+
+The desktop app provides:
+
+- a system selector and every maintenance switch,
+- **Preview** and **Apply**,
+- **Restore gamelist**, **Restore catalog**, and **Delete backups** with preview
+  variants,
+- a live log and automatic ROM-folder detection.
+
+See [GUI guide](docs/gui.md) for every button and option.
+
+## Safety
+
+- Always preview first; **Preview** writes nothing.
+- Modified files get timestamped backups. Catalog and gamelist restores create
+  `*.recovery.bak` safety copies.
+- `--keep-baks N` keeps the newest N backups per file (default `5`, `0` keeps
+  all). Recovery backups are never pruned automatically.
+- The release binaries are unsigned. Treat downloads like any other unsigned
+  executable and verify the published SHA-256 checksums.
+
+## Command line (optional)
+
+Source users and tinkerers can run the scripts directly:
+
+```bash
+python3 gamelist_manager.py --dry-run    # preview
+python3 gamelist_manager.py              # apply
+python3 restore_gamelist.py --system nes # restore one gamelist
+```
+
+See the [CLI reference](docs/cli.md) for all commands, flags, diagnostics, and
+the bisecting workflow.
 
 ## Requirements
 
-- Python 3.9+. (`ET.indent`, used by the writer, was added in 3.9.)
-- Read/write access to the ROM directories and the catalog files.
-- Existing `root.dat` and `fileinfo` if catalog synchronization is required.
+- **GUI:** no Python required. macOS Apple Silicon or Windows.
+- **CLI/source:** Python 3.9+; standard library only.
+- Existing `root.dat` and `cubegm/fileinfo` if catalog synchronization is needed.
+- Read/write access to the ROM folders and catalog files.
 
-No third-party packages are needed to run the tools. Keep the Python modules
-together: `gamelist_manager.py` imports `catalog_sync.py`, `m15core.py`, and
-`systems.py`. Quick check:
+## Documentation
 
-```bash
-python3 -c "import catalog_sync, gamelist_manager, m15core, systems; print('ok')"
-```
-
-## Project files
-
-| File | Purpose |
+| Guide | Contents |
 |---|---|
-| `gamelist_manager.py` | Main utility: scans ROMs, maintains system gamelists, then triggers catalog sync. |
-| `catalog_sync.py` | Library that regenerates localized `root.dat` members and `fileinfo` counts. Not run directly. |
-| `m15core.py` | Shared XML, folder-lookup, and backup-retention helpers. |
-| `systems.py` | System registry and the device's `FILEINFO_SYSTEM_ORDER`. |
-| `restore_gamelist.py` | Restores a system's `gamelist.xml` from the newest valid timestamped backup. |
-| `restore_catalog.py` | Restores `root.dat` + `fileinfo` from the newest valid matching backup pair. |
-| `delete_gamelist_backups.py` | Finds and deletes matching timestamped backups, with a dry-run option. |
-| `m15_gui.py` | Optional Tkinter desktop GUI. It is the released desktop app. |
-| `tests/` | Pytest fixtures and characterization/regression tests. |
-| `pyproject.toml`, `requirements-dev.txt` | Test and lint configuration (development only). |
-| `.github/workflows/ci.yml` | Tests and lint on push and pull request. |
-| `.github/workflows/build-app.yml` | Packages `m15_gui.py` into macOS/Windows apps. |
-
-## Distribution
-
-- The released product is the self-contained GUI app (`.app` on macOS, `.exe` on
-  Windows). End users do **not** install Python.
-- The command-line tools stay in the repository as source for scripting and
-  tinkering. They are not shipped as separate executables.
-- The GUI assumes the standard catalog layout shown below; it does not expose
-  custom `root.dat` or `fileinfo` paths.
-
-## Directory layout
-
-Run the CLI tools from the folder that contains the system folders. By default the
-main script uses its own directory as the ROM root.
-
-```text
-/Volumes/M15/
-├── cubegm/
-│   └── fileinfo                 # 25 comma-separated counters (outside roms/)
-└── roms/                        # <- run the scripts here
-    ├── gamelist_manager.py
-    ├── catalog_sync.py
-    ├── m15core.py
-    ├── systems.py
-    ├── restore_gamelist.py
-    ├── restore_catalog.py
-    ├── delete_gamelist_backups.py
-    ├── README.md
-    ├── root.dat                 # ZIP: fileinfo.001/.002/.003
-    ├── arcade/
-    │   ├── gamelist.xml
-    │   ├── images/              # images live per system folder
-    │   └── *.zip
-    ├── nes/
-    │   └── ...
-    ├── snes/
-    │   └── ...
-    └── psx/
-        └── ...
-```
-
-Other defaults used by `gamelist_manager.py`:
-
-- `root.dat`: `<root>/root.dat`
-- `fileinfo`: `<root>/../cubegm/fileinfo`
-
-Both can be overridden with `--root-dat` and `--fileinfo`.
-
-## Supported systems and ROM extensions
-
-Only files **directly inside** each system folder are scanned (no recursion), and
-files starting with `._` are ignored.
-
-| System | Extensions |
-|---|---|
-| `arcade` | `.fba`, `.zip` |
-| `atari2600` | `.a26` |
-| `atari5200` | `.zip` |
-| `atari7800` | `.a78`, `.zip` |
-| `atarilynx` | `.zip` |
-| `cps1` | `.fba`, `.zip` |
-| `cps2` | `.fba`, `.zip` |
-| `cps3` | `.zip`, `.fba` |
-| `fbneo` | `.zip`, `.fba` |
-| `gb` | `.zip`, `.gb` |
-| `gba` | `.zip` |
-| `gbc` | `.zip` |
-| `gamegear` | `.zip` |
-| `genesis` | `.zip` |
-| `mame` | `.zip` |
-| `megadrive` | `.zip` |
-| `nes` | `.zip` |
-| `nesh` | `.zip` |
-| `ngpc` | `.zip` |
-| `pcengine` | `.zip` |
-| `psx` | `.img`, `.pbp`, `.iso`, `.bin`, `.chd`, `.cue`, `.ccd`, `.mdf`, `.mds`, `.nrg`, `.cso`, `.zso`, `.ecm` |
-| `sfc` | `.zip` |
-| `snes` | `.zip` |
-
-## Device catalog formats
-
-**`root.dat`** — a ZIP archive with exactly these three members, one per UI
-language:
-
-| Member | Language |
-|---|---|
-| `fileinfo.001` | Simplified Chinese (`zh_CN`) |
-| `fileinfo.002` | Traditional Chinese (`zh_TW`) |
-| `fileinfo.003` | Korean (`ko_KR`) |
-
-Each line has 6 tab-separated fields:
-
-```text
-system/rom.zip <TAB> "00803  Display Name" <TAB> "00803  DISPLAY NAME" <TAB> "00803  Localized Name" <TAB> Display Name <TAB> images/rom.png
-```
-
-Fields 2–4 carry a rendered `NNNNN␣␣` ID prefix (5 digits + 2 spaces), stripped
-when existing localized titles are read back and preserved by ROM path.
-
-When validating generated output, compare `root.dat` by its three uncompressed
-member payloads, not by the archive bytes: ZIP headers include a timestamp and
-change between runs. `gamelist.xml` and `fileinfo` are byte-stable.
-
-**`cubegm/fileinfo`** — 25 comma-separated non-negative integers:
-
-```text
-<total games>,<reserved>,<per-system counts in FILEINFO_SYSTEM_ORDER>
-```
-
-`FILEINFO_SYSTEM_ORDER` is:
-
-```text
-arcade, fbneo, mame, atari2600, atari5200, atari7800, atarilynx, cps1, cps2,
-cps3, pcengine, nes, nesh, gb, sfc, snes, gbc, gba, genesis, gamegear, megadrive,
-ngpc, psx
-```
-
-The 2nd field is preserved as-is from the existing file (its meaning is not
-documented in the scripts).
-
-## Main utility: `gamelist_manager.py`
-
-```bash
-python3 gamelist_manager.py
-```
-
-With no arguments it uses the script's directory as the root and processes all
-configured systems.
-
-### Common commands
-
-```bash
-# Preview everything without writing
-python3 gamelist_manager.py --dry-run
-
-# Process a single system
-python3 gamelist_manager.py --system nes
-
-# Use a different ROM root
-python3 gamelist_manager.py --root /path/to/roms
-
-# Delete orphan images without prompting
-python3 gamelist_manager.py --delete-orphaned-images
-
-# Keep entries whose ROM files are missing
-python3 gamelist_manager.py --skip-remove-missing
-
-# Parse and re-save only (all features off + force write)
-python3 gamelist_manager.py --roundtrip
-
-# Keep only the newest 3 backups per file (0 = keep all)
-python3 gamelist_manager.py --keep-baks 3
-```
-
-> **`--roundtrip` is not read-only.** It disables the individual features but
-> *forces* an XML write. It also skips catalog preflight and catalog sync, so it
-> is safe for bisecting invalid XML. Combine with `--dry-run` to preview.
-
-> **`--system` only changes one system.** Duplicate detection and ID allocation
-> still use every system, so a new ID cannot collide with another system. The
-> catalog is still rebuilt from all systems.
-
-> **Diagnostics:** `--skip-preflight` writes even when the catalog would reject
-> the XML, and `--skip-catalog` leaves `root.dat`/`fileinfo` untouched. Both are
-> for debugging only and can leave the catalog stale.
-
-### Command-line options
-
-| Option | Description |
-|---|---|
-| `--root PATH` | ROM collection root (default: the script's directory). |
-| `--system NAME` | Process only the named system (IDs still come from the global pool). |
-| `--dry-run` | Preview changes and run catalog preflight; no writes, no catalog sync. |
-| `--delete-orphaned-images` | Delete orphan images without prompting. |
-| `--no-prompt` | Report orphan images without asking (never deletes). |
-| `--root-dat PATH` | Path to `root.dat` (default `<root>/root.dat`). |
-| `--fileinfo PATH` | Path to `fileinfo` (default `<root>/../cubegm/fileinfo`). |
-| `--skip-preflight` | Diagnostics: write even if catalog preflight fails. |
-| `--skip-catalog` | Diagnostics: do not rebuild `root.dat`/`fileinfo`. |
-
-### Feature switches
-
-| Option | Effect |
-|---|---|
-| `--skip-remove-missing` | Keep entries whose ROM file is missing. |
-| `--skip-add` | Do not add newly discovered ROMs. |
-| `--skip-ids` | Do not add missing `<gameid>` values. |
-| `--skip-normalize` | Do not strip numeric prefixes from titles. |
-| `--skip-sort` | Do not sort alphabetically. |
-| `--dedup {none,path,gameid,both}` | Duplicate criteria (default `both`). |
-
-### Writer options
-
-| Option | Effect |
-|---|---|
-| `--no-indent` | Skip `ET.indent` whitespace reformatting. |
-| `--xml-declaration {et,double}` | `et` = single-quoted ElementTree default; `double` = `<?xml version="1.0" encoding="utf-8"?>`. |
-| `--force-write` | Write even if nothing changed. |
-| `--keep-baks N` | Keep the newest N timestamped backups per file (default `5`; `0` = keep all). Recovery backups are never pruned. |
-
-### What the main utility does
-
-Per system, subject to the selected options:
-
-1. Scans the system folder for supported ROM files.
-2. Removes entries whose referenced ROM files are missing.
-3. Adds entries for newly found ROM files.
-4. Assigns `<gameid>` to entries lacking one (reuses a safe existing `<id>`, else
-   allocates from the global max + 1 across all systems).
-5. Strips numeric prefixes from the `zh_CN`, `en_US`, `zh_TW`, and `ko_KR` fields.
-6. Removes duplicate entries per `--dedup`.
-7. Reports orphaned images and deletes them only with `--delete-orphaned-images`
-   (or after a `y` answer at the prompt).
-8. Sorts entries alphabetically by `<name>`.
-9. **Catalog preflight:** validates the transformed gamelists before writing
-   anything. Every entry needs a `<path>` and a numeric, globally unique
-   `<gameid>`. If preflight fails, no gamelist, image, or catalog file changes.
-10. Validates and safely writes modified gamelists (temp file, timestamped backup,
-    BOM preserved), keeping the newest `--keep-baks` backups.
-11. After all systems, rebuilds `root.dat` and `fileinfo` (unless `--dry-run`).
-    An unchanged catalog is not rewritten and creates no backup.
-12. Enforces `--keep-baks` across XML and catalog backups, including files that
-    were not rewritten in this run.
-
-New entries get a generated game ID, a `<path>`, an image path
-`./images/<rom-filename-without-extension>.png`, system-specific metadata
-(`video_id`, `class_type`, `game_type`, `timer`, and for `psx` a `core`), and the
-four language fields.
-
-Non-numeric `<gameid>` values are rejected by preflight; they cannot produce a
-valid device catalog. Fix or remove them before applying.
-
-### Bisecting a device problem
-
-```bash
-# 1. Does a pure parse/save break it? (XML only; catalog untouched)
-python3 gamelist_manager.py --roundtrip
-
-# Same thing as a preview:
-python3 gamelist_manager.py --roundtrip --dry-run
-
-# 2. Re-enable one behavior (e.g. sorting only):
-python3 gamelist_manager.py --skip-remove-missing --skip-add --skip-ids \
-    --skip-normalize --dedup none --dry-run
-
-# 3. Full apply:
-python3 gamelist_manager.py
-```
-
-## Catalog synchronization: `catalog_sync.py`
-
-Imported by the main utility and called after a non-dry-run pass. It rebuilds:
-
-- Localized data in `root.dat`.
-- Game counts in `fileinfo`.
-
-### Preconditions
-
-Both files must already exist:
-
-- `root.dat` must be a ZIP with exactly `fileinfo.001`, `fileinfo.002`,
-  `fileinfo.003`.
-- `fileinfo` must be exactly 25 comma-separated non-negative integers.
-- A collection with zero games is valid; generated members are empty files.
-
-It reads all configured gamelists and validates that:
-
-- Each document has a `<gameList>` root.
-- Every game entry has a `<path>`.
-- Every `<gameid>` is numeric and globally unique.
-- Catalog paths are unique.
-
-**Validation is all-or-nothing:** if any check fails, no catalog file is written.
-
-The main utility also runs the same rules as a **preflight before writing any
-gamelist**, including the catalog file formats, so a catalog-invalid collection
-fails without changing files. The post-write validation above remains in place.
-
-### Localization and counts
-
-Localized members are generated for `zh_CN`, `zh_TW`, and `ko_KR`. Existing
-titles are preserved by ROM path where possible; otherwise the gamelist language
-value (or `<name>`) is used. `fileinfo` gets the new total and per-system counts
-in `FILEINFO_SYSTEM_ORDER`, keeping the existing 2nd field.
-
-Writes are validated, timestamped-backed-up, and rolled back if post-write
-validation fails. If the generated content is identical to the installed
-catalog, nothing is written and no backup is created.
-
-Catalog backups follow `--keep-baks` (default 5). The newest backup of each file
-is always kept.
-
-Override the paths when needed (CLI only; the GUI assumes the standard layout):
-
-```bash
-python3 gamelist_manager.py \
-  --root /path/to/roms \
-  --root-dat /path/to/root.dat \
-  --fileinfo /path/to/fileinfo
-```
-
-## Restoring a gamelist: `restore_gamelist.py`
-
-Restores the newest valid timestamped backup in each system folder.
-
-```bash
-python3 restore_gamelist.py --dry-run            # preview
-python3 restore_gamelist.py                       # restore all systems
-python3 restore_gamelist.py --system nes
-python3 restore_gamelist.py --recursive
-```
-
-### Behavior
-
-- Matches `gamelist.xml.YYYYMMDD_HHMMSS.bak` and `..._N.bak`.
-- Excludes its own `*.recovery.bak` files from source candidates.
-- Tries the newest first; skips invalid (non-well-formed) XML.
-- Saves the current file as `*.recovery.bak` before replacing it.
-- Copies (does not move) the backup, validates the result, and rolls back on
-  failure.
-
-> **Exit codes:** returns non-zero if *any* inspected folder had no usable backup
-> — which is normal when some system folders have no backups yet, even if every
-> actual restore succeeded.
-
-## Restoring the catalog: `restore_catalog.py`
-
-Restores `root.dat` and `fileinfo` together from the newest valid matching
-timestamped backup pair.
-
-```bash
-python3 restore_catalog.py --dry-run      # preview
-python3 restore_catalog.py                # restore
-```
-
-- Pairs backups by timestamp and sequence number.
-- Skips pairs where either file is missing or fails catalog validation.
-- Saves the current `root.dat` and `fileinfo` as `*.recovery.bak` first.
-- Rolls back both files if the restored pair fails validation.
-
-The GUI has matching **Restore catalog (preview)** and **Restore catalog**
-buttons.
-
-## Deleting old backups: `delete_gamelist_backups.py`
-
-```bash
-python3 delete_gamelist_backups.py --dry-run       # preview (recommended)
-python3 delete_gamelist_backups.py                 # XML backups in cwd
-python3 delete_gamelist_backups.py --system nes
-python3 delete_gamelist_backups.py --recursive
-python3 delete_gamelist_backups.py --catalog       # also root.dat/fileinfo
-```
-
-Matches timestamped `gamelist.xml` backups, including numbered variants **and**
-`.recovery.bak` files. **Deletion is the default behavior**, so always inspect
-with `--dry-run` first.
-
-`--catalog` also deletes `root.dat.*.bak` and `fileinfo.*.bak` backups. It is
-independent of `--system`; catalog backups are global.
-
-The main utility prunes its own timestamped XML/catalog backups according to
-`--keep-baks` after every apply, including files that did not change in that run.
-It never deletes `.recovery.bak` files. Use this tool when you want to remove
-those too.
-
-## Recommended workflow
-
-1. **Preview** the maintenance run:
-
-   ```bash
-   python3 gamelist_manager.py --dry-run
-   ```
-
-2. **Review** the reported changes (adds, removals, dedupes, sorts, orphan
-   images). A catalog preflight failure means nothing was written; fix the
-   reported entries first.
-
-3. **Apply**:
-
-   ```bash
-   python3 gamelist_manager.py
-   ```
-
-4. **Verify** that `root.dat` and `fileinfo` were rebuilt successfully and that
-   the device sees the expected library.
-
-5. **Restore** a single system if something looks wrong:
-
-   ```bash
-   python3 restore_gamelist.py --system nes
-   ```
-
-6. **Prune backups** only once you're confident:
-
-   ```bash
-   python3 delete_gamelist_backups.py --dry-run
-   python3 delete_gamelist_backups.py
-   ```
-
-## Desktop app (GUI)
-
-`m15_gui.py` is the graphical front-end and the released desktop app. It calls
-the manager's `Options`/`run()` API directly on a background thread and streams
-output into a log pane; it does not patch `sys.argv`, `sys.stdout`, or the
-working directory.
-
-It provides, for the selected ROM folder:
-
-- System selector (all systems or one), `--dedup`, and XML-declaration choices.
-- Checkboxes mirroring every feature switch (remove missing, add, IDs, normalize,
-  sort, indent, force write, delete orphan images).
-- A **Keep backups** control matching `--keep-baks` (`0` keeps all).
-- **Preview (dry run)** and **Apply** buttons, plus **Restore gamelist**,
-  **Restore catalog**, and **Delete backups** with preview variants. The delete
-  dialog can include catalog backups.
-- A live output log and an auto-detected ROM folder (looks for `root.dat` plus
-  system folders under `/Volumes`).
-
-The GUI assumes the standard catalog layout; it does not expose custom
-`root.dat`/`fileinfo` paths. Use the CLI for those.
-
-### Run it from source
-
-```bash
-python3 m15_gui.py
-```
-
-### Build a standalone app locally
-
-```bash
-python3 -m pip install pyinstaller
-pyinstaller --noconfirm --clean --windowed --name M15Manager m15_gui.py
-# macOS:  dist/M15Manager.app
-# Windows: dist/M15Manager.exe  (add --onefile)
-```
-
-The result needs no Python installed on the target machine.
-
-### Tests and lint
-
-Development tooling is optional and never imported by the shipped scripts:
+| [Install](docs/install.md) | Downloads, first launch, unsigned-app warnings. |
+| [GUI guide](docs/gui.md) | Every button, option, and restore action. |
+| [CLI reference](docs/cli.md) | Commands, flags, presets, diagnostics, examples. |
+| [Device layout](docs/device-layout.md) | Folder layout, defaults, supported systems. |
+| [Catalog format](docs/catalog-format.md) | `root.dat`, `fileinfo`, localization, preflight rules. |
+| [Backups and restore](docs/backups.md) | Backup names, retention, restore, pruning. |
+| [Troubleshooting](docs/troubleshooting.md) | Common failures and fixes. |
+| [Development](docs/development.md) | Architecture, tests, lint, adding a system. |
+| [Releasing](docs/releasing.md) | Local builds, GitHub Actions, artifacts, checksums. |
+| [Refactor plan](docs/refactor-plan.md) | Historical notes from the refactor. |
+
+## Development
 
 ```bash
 python3 -m pip install -r requirements-dev.txt
@@ -507,139 +136,11 @@ python3 -m pytest
 python3 -m ruff check .
 ```
 
-Tests use temporary fixture collections and do not touch the real ROM library.
-
-### Build via GitHub Actions
-
-Open **Actions → Build / release desktop app → Run workflow**. There are three
-modes:
-
-- **Build only (default):** leave “Publish a GitHub Release” unchecked. The app
-  is built and uploaded as workflow artifacts; no tag is created and no version
-  is bumped.
-- **Build + release:** check “Publish a GitHub Release”. The workflow bumps the
-  latest `vX.Y.Z` tag, or uses the exact `tag_override` you provide.
-- **Tag push:** pushing a tag such as `v1.2.3` builds and publishes that exact
-  version. Tags containing a suffix like `v1.2.3-rc1` are marked as pre-releases.
-
-It produces, for each platform:
-
-| Artifact | Platform |
-|---|---|
-| `M15Manager-ARM64.zip` | macOS, Apple Silicon |
-| `M15Manager-windows.zip` | Windows |
-| `SHA256SUMS.txt` | Checksums for both zips (release only) |
-
-Artifacts from a build-only run are available under the workflow run and expire
-according to the repository’s artifact retention setting.
-
-### First-launch notes (unsigned apps)
-
-The builds are **not code-signed or notarized**, because that requires a paid
-Apple Developer account (and a Windows certificate). Users will see a warning
-the first time:
-
-- **macOS:** "Apple cannot check it for malicious software." Right-click the app
-  → **Open** → **Open**, or run
-  `xattr -dr com.apple.quarantine /Applications/M15Manager.app`.
-- **Windows:** SmartScreen "Windows protected your PC" → **More info** →
-  **Run anyway**.
-
-To remove these warnings entirely, add a Developer ID certificate and notarize
-(macOS) or sign the executable (Windows) inside the workflow.
-
-### CI notes
-
-- `.github/workflows/ci.yml` runs pytest and ruff on Python 3.9, 3.13, and 3.14
-  for every push and pull request.
-- `.github/workflows/build-app.yml` also runs the tests and lint on Python 3.13
-  before building; a failing test blocks the release.
-- The release build uses pinned PyInstaller 6.22.3, `macos-15` (Apple Silicon),
-  and `windows-2025` with Python 3.13 and Tkinter.
-- The macOS app is ad-hoc signed and verified; signing failure fails the build.
-- Releases are serialized with a concurrency group, and manual release tags are
-  checked for semver format and collisions.
-- Intel macOS builds are not produced; GitHub retired the `macos-13` image.
-- Keep ROM files out of the repository; only the scripts need to be committed,
-  otherwise every CI run clones the whole collection.
-
-## Troubleshooting
-
-### Catalog preflight fails
-
-The run stopped before changing any files. Check the listed entries:
-
-- Every game entry needs a non-empty `<path>`.
-- Every `<gameid>` must be numeric (for example `42`, not `game42`) and globally
-  unique across all systems.
-- Two entries cannot resolve to the same catalog path.
-- Every configured system folder must exist with a readable `gamelist.xml`.
-- `root.dat` and `fileinfo` must exist and match the documented formats.
-
-A dry run performs the same preflight, so you can iterate without touching the
-device.
-
-### Catalog synchronization fails
-
-Check that:
-
-- `root.dat` exists and is a valid ZIP with exactly `fileinfo.001`, `.002`, `.003`.
-- `fileinfo` exists and is exactly 25 comma-separated non-negative integers.
-- All configured gamelists are valid XML with a `<gameList>` root.
-- Every entry has a `<path>` and a numeric, globally unique `<gameid>`.
-- No catalog paths are duplicated.
-
-If the catalog step fails after the XMLs were written, the gamelists are newer
-than `root.dat`/`fileinfo`. Restore the backups reported in the output, or use:
-
-```bash
-python3 restore_catalog.py --dry-run
-python3 restore_catalog.py
-```
-
-### A ROM is not added
-
-- It must be directly inside the system folder (no subfolders).
-- Its extension must be supported for that system.
-- The filename must not start with `._`.
-- The run must not use `--skip-add`.
-- The correct `--root` and `--system` must be selected.
-
-### An entry was removed
-
-Entries whose ROM files are missing are removed by default. Keep them with:
-
-```bash
-python3 gamelist_manager.py --skip-remove-missing
-```
-
-### A restore skips a backup
-
-Candidate backups that are not well-formed XML are skipped, so an older valid
-backup may be chosen. `.recovery.bak` files are never used as sources.
-
-### Preview without modifying anything
-
-```bash
-python3 gamelist_manager.py --dry-run
-python3 restore_gamelist.py --system nes --dry-run
-python3 delete_gamelist_backups.py --dry-run
-```
-
-## Safety notes
-
-- Keep an off-device copy of `root.dat` and `cubegm/fileinfo` before large runs.
-- Always `--dry-run` first where available.
-- Be cautious with `--delete-orphaned-images`; confirm the images are genuinely
-  unused.
-- Catalog synchronization expects a consistent set of gamelists and stops on
-  invalid or duplicate IDs/paths. Preflight catches this before any write.
-- `--roundtrip` forces a write; don't treat it as a preview.
-- The default `--keep-baks 5` prunes older timestamped backups. Recovery backups
-  are never pruned automatically; keep the ones you need.
-- Keep recovery backups until the resulting gamelists and catalogs are verified.
-- Eject the volume cleanly before disconnecting the M15's storage.
+The project stays flat: `gamelist_manager.py`, `catalog_sync.py`, `m15core.py`,
+`systems.py`, the restore/prune scripts, and `m15_gui.py`. See
+[Development](docs/development.md) and [Releasing](docs/releasing.md).
 
 ## License
 
-No license is specified in the scripts. Add one before distributing.
+No license has been specified yet. Add one before redistributing the project or
+its binaries.
