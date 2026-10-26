@@ -32,6 +32,13 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 from catalog_sync import sync_catalog
+from m15core import (
+    find_system_folder as _find_system_folder,
+    get_child,
+    get_text,
+    local_tag,
+    set_child_text,
+)
 
 LANGUAGES = ("zh_CN", "en_US", "zh_TW", "ko_KR")
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -169,35 +176,6 @@ class Spinner:
             sys.stdout.flush()
 
 
-def local_tag(element):
-    """Return a tag name without an optional XML namespace."""
-    return (
-        element.tag.rsplit("}", 1)[-1]
-        if isinstance(element.tag, str)
-        else ""
-    )
-
-
-def get_child(element, name):
-    for item in element:
-        if local_tag(item) == name:
-            return item
-    return None
-
-
-def get_text(element, name):
-    item = get_child(element, name)
-    return item.text.strip() if item is not None and item.text else ""
-
-
-def set_child_text(element, name, value):
-    item = get_child(element, name)
-    if item is None:
-        item = ET.SubElement(element, name)
-    item.text = str(value)
-    return item
-
-
 def id_key(value):
     """Numeric IDs compare by value; text IDs compare case-insensitively."""
     value = (value or "").strip()
@@ -240,19 +218,7 @@ def normalize_language_fields(entry):
 
 
 def find_system_folder(root, name):
-    direct = root / name
-    if direct.is_dir():
-        return direct
-    try:
-        for candidate in root.iterdir():
-            if (
-                candidate.is_dir()
-                and candidate.name.casefold() == name.casefold()
-            ):
-                return candidate
-    except OSError:
-        pass
-    return None
+    return _find_system_folder(root, name, ignore_oserror=True)
 
 
 def scan_game_files(folder, extensions):

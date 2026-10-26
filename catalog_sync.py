@@ -10,6 +10,10 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 
+from m15core import find_system_folder as _find_system_folder
+from m15core import get_text as _get_text
+from m15core import local_tag as _tag
+
 # fileinfo fields: total, existing reserved field, then system counts in this order.
 FILEINFO_SYSTEM_ORDER = (
     "arcade", "fbneo", "mame", "atari2600", "atari5200", "atari7800",
@@ -24,25 +28,12 @@ MEMBER_LANGUAGES = {
 }
 
 
-def _tag(e):
-    return e.tag.rsplit("}", 1)[-1] if isinstance(e.tag, str) else ""
-
-
 def _text(e, tag):
-    for c in e:
-        if _tag(c) == tag:
-            return (c.text or "").strip()
-    return ""
+    return _get_text(e, tag)
 
 
 def _folder(root, name):
-    direct = root / name
-    if direct.is_dir():
-        return direct
-    for p in root.iterdir():
-        if p.is_dir() and p.name.casefold() == name.casefold():
-            return p
-    return None
+    return _find_system_folder(root, name)
 
 
 def _catalog_path(system, raw):
