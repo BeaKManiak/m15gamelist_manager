@@ -18,8 +18,12 @@ Writer options:
   --keep-baks N           keep newest N backups per file (default 5, 0 = all)
 
 Shortcut:
-  --roundtrip             all features off + force-write: parse and re-save only
-                          (the catalog is rewritten only if its content changed)
+  --roundtrip             all features off + force-write: parse and re-save XML
+                          only (skips preflight and catalog sync)
+
+Diagnostics:
+  --skip-preflight        write even when catalog preflight would reject the XML
+  --skip-catalog          do not rebuild root.dat/fileinfo
 """
 
 from __future__ import annotations
@@ -492,6 +496,8 @@ class Options:
     force_write: bool = False
     keep_baks: int = 5
     show_spinner: bool = True
+    skip_preflight: bool = False
+    skip_catalog: bool = False
 
 
 @dataclass
@@ -598,7 +604,19 @@ def build_parser():
     )
     writer.add_argument("--roundtrip", action="store_true",
                         help="All features off + force-write (parse and "
-                             "re-save only).")
+                             "re-save XML only; no preflight or catalog).")
+
+    diag = parser.add_argument_group("diagnostics")
+    diag.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Write even when the catalog preflight would reject the XML.",
+    )
+    diag.add_argument(
+        "--skip-catalog",
+        action="store_true",
+        help="Do not rebuild root.dat/fileinfo.",
+    )
     return parser
 
 
@@ -612,6 +630,8 @@ def options_from_args(args) -> Options:
         args.dedup = "none"
         args.force_write = True
         args.no_prompt = True
+        args.skip_preflight = True
+        args.skip_catalog = True
 
     return Options(
         root=args.root.expanduser().resolve(),
@@ -631,6 +651,8 @@ def options_from_args(args) -> Options:
         xml_declaration=args.xml_declaration,
         force_write=args.force_write,
         keep_baks=args.keep_baks,
+        skip_preflight=args.skip_preflight,
+        skip_catalog=args.skip_catalog,
     )
 
 
@@ -966,6 +988,11 @@ def delete_orphans_if_requested(
 
 
 def run_catalog_sync(options, root_folder, *, output=print):
+    if options.skip_catalog:
+        output(
+            "\nGlobal catalog synchronization skipped (--skip-catalog)."
+        )
+        return True, False, None
     if options.dry_run:
         output(
             "\nGlobal catalog synchronization skipped: "
@@ -1074,7 +1101,11 @@ def run(options: Options, *, output=print, ask=input) -> RunResult:
         if context is not None:
             transformed[system_name] = context
 
-    preflight_issues = collect_preflight_issues(pool_records, transformed, options)
+    preflight_issues = []
+    if not options.skip_preflight:
+        preflight_issues = collect_preflight_issues(
+            pool_records, transformed, options
+        )
     if preflight_issues:
         output("\nCATALOG PREFLIGHT FAILED (no files were changed):")
         for issue in preflight_issues:
@@ -1135,6 +1166,10 @@ def print_report(result: RunResult, *, output=print) -> None:
     output(f"  indent                     : {'OFF' if not options.indent else 'on'}")
     output(f"  xml declaration            : {options.xml_declaration}")
     output(f"  force write                : {'on' if options.force_write else 'off'}")
+    if options.skip_preflight:
+        output("  catalog preflight          : OFF (--skip-preflight)")
+    if options.skip_catalog:
+        output("  catalog sync               : OFF (--skip-catalog)")
 
     output(f"\nGLOBAL DUPLICATE <gameid> VALUES BEFORE CLEANUP: {len(result.duplicates)}")
     if result.duplicates:

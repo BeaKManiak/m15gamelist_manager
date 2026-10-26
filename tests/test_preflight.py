@@ -154,6 +154,71 @@ def test_missing_catalog_files_fail_preflight(make_collection_factory):
     assert "fileinfo:" in text
 
 
+def test_roundtrip_bypasses_preflight_and_catalog(make_collection_factory):
+    collection = make_collection_factory(
+        games={
+            "nes": [
+                make_game(
+                    {"gameid": "abc", "path": "./Foo.zip", "name": "Foo"}
+                )
+            ]
+        },
+        rom_files={"nes": ["Foo.zip"]},
+    )
+    catalog_before = (
+        collection.root_dat.read_bytes(),
+        collection.fileinfo.read_bytes(),
+    )
+
+    result = gamelist_manager.run(
+        gamelist_manager.Options(
+            root=collection.root,
+            system="nes",
+            force_write=True,
+            skip_preflight=True,
+            skip_catalog=True,
+        ),
+        output=lambda _text: None,
+    )
+
+    assert result.exit_code == 0
+    assert not result.preflight_issues
+    assert result.catalog_summary is None
+    assert list(collection.system_dir("nes").glob("gamelist.xml.*.bak"))
+    assert (
+        collection.root_dat.read_bytes(),
+        collection.fileinfo.read_bytes(),
+    ) == catalog_before
+
+
+def test_skip_catalog_still_runs_preflight(make_collection_factory):
+    collection = make_collection_factory(
+        games={
+            "nes": [
+                make_game(
+                    {"gameid": "abc", "path": "./Foo.zip", "name": "Foo"}
+                )
+            ]
+        },
+        rom_files={"nes": ["Foo.zip"]},
+    )
+    before = snapshot_tree(collection.root)
+
+    result = gamelist_manager.run(
+        gamelist_manager.Options(
+            root=collection.root,
+            system="nes",
+            skip_catalog=True,
+            force_write=True,
+        ),
+        output=lambda _text: None,
+    )
+
+    assert result.exit_code == 1
+    assert result.preflight_issues
+    assert snapshot_tree(collection.root) == before
+
+
 def test_valid_run_still_writes_and_syncs_catalog(make_collection_factory):
     collection = make_collection_factory(rom_files={"nes": ["Mario.zip"]})
 

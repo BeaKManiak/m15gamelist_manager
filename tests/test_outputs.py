@@ -425,7 +425,7 @@ def test_empty_collection_catalog_sync(make_collection_factory, monkeypatch):
     assert read_fileinfo(collection.fileinfo)[0] == 0
 
 
-def test_roundtrip_writes_xml_and_skips_unchanged_catalog(
+def test_roundtrip_writes_xml_and_skips_catalog(
     make_collection_factory, monkeypatch, capsys
 ):
     collection = make_collection_factory()
@@ -446,7 +446,9 @@ def test_roundtrip_writes_xml_and_skips_unchanged_catalog(
         collection.root_dat.read_bytes(),
         collection.fileinfo.read_bytes(),
     ) == catalog_before
-    assert "Catalog unchanged" in capsys.readouterr().out
+    assert "Global catalog synchronization skipped (--skip-catalog)" in (
+        capsys.readouterr().out
+    )
 
 
 def test_second_apply_is_idempotent(make_collection_factory, monkeypatch):

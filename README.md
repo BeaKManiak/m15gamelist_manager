@@ -212,12 +212,16 @@ python3 gamelist_manager.py --keep-baks 3
 ```
 
 > **`--roundtrip` is not read-only.** It disables the individual features but
-> *forces* an XML write. Combine with `--dry-run` to preview. The catalog is
-> rewritten only when its content actually changed.
+> *forces* an XML write. It also skips catalog preflight and catalog sync, so it
+> is safe for bisecting invalid XML. Combine with `--dry-run` to preview.
 
 > **`--system` only changes one system.** Duplicate detection and ID allocation
 > still use every system, so a new ID cannot collide with another system. The
 > catalog is still rebuilt from all systems.
+
+> **Diagnostics:** `--skip-preflight` writes even when the catalog would reject
+> the XML, and `--skip-catalog` leaves `root.dat`/`fileinfo` untouched. Both are
+> for debugging only and can leave the catalog stale.
 
 ### Command-line options
 
@@ -230,6 +234,8 @@ python3 gamelist_manager.py --keep-baks 3
 | `--no-prompt` | Report orphan images without asking (never deletes). |
 | `--root-dat PATH` | Path to `root.dat` (default `<root>/root.dat`). |
 | `--fileinfo PATH` | Path to `fileinfo` (default `<root>/../cubegm/fileinfo`). |
+| `--skip-preflight` | Diagnostics: write even if catalog preflight fails. |
+| `--skip-catalog` | Diagnostics: do not rebuild `root.dat`/`fileinfo`. |
 
 ### Feature switches
 
@@ -284,7 +290,10 @@ valid device catalog. Fix or remove them before applying.
 ### Bisecting a device problem
 
 ```bash
-# 1. Does a pure parse/save break it?
+# 1. Does a pure parse/save break it? (XML only; catalog untouched)
+python3 gamelist_manager.py --roundtrip
+
+# Same thing as a preview:
 python3 gamelist_manager.py --roundtrip --dry-run
 
 # 2. Re-enable one behavior (e.g. sorting only):

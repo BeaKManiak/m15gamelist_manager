@@ -21,6 +21,8 @@ def test_options_from_args_roundtrip_sets_every_switch():
     assert options.dedup == "none"
     assert options.force_write
     assert options.no_prompt
+    assert options.skip_preflight
+    assert options.skip_catalog
     assert options.root == Path("/tmp").resolve()
 
 
@@ -44,6 +46,8 @@ def test_parser_accepts_all_documented_flags():
         "--xml-declaration", "double",
         "--force-write",
         "--keep-baks", "3",
+        "--skip-preflight",
+        "--skip-catalog",
         "--roundtrip",
     ])
     options = gamelist_manager.options_from_args(args)
