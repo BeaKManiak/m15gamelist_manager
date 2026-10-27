@@ -61,11 +61,11 @@ Compare the result with the release's `SHA256SUMS.txt`.
 ## First run
 
 1. Connect the M15 storage.
-2. Open **M15Manager**.
-3. Select the folder that contains `root.dat` and the system folders — usually
-   the `roms` folder on the device.
-4. Click **Preview (dry run)**.
-5. Review the log, then click **Apply changes**.
+2. Open **M15Manager**. It reuses the last folder or finds the card itself.
+3. If needed, use **Change…** to select the folder that contains `root.dat` and
+   the system folders — usually the `roms` folder on the device.
+4. Click **Update library**.
+5. Review the summary, then confirm. Nothing is written before you confirm.
 
 The GUI expects the standard layout:
 

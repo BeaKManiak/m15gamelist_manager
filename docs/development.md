@@ -13,7 +13,8 @@ The project stays flat and uses only the Python standard library at runtime.
 | `restore_gamelist.py` | Restores a system gamelist from a timestamped backup. |
 | `restore_catalog.py` | Restores `root.dat` + `fileinfo` as a pair. |
 | `delete_gamelist_backups.py` | Finds and deletes timestamped backups. |
-| `m15_gui.py` | Tkinter desktop app. |
+| `m15_gui.py` | Tkinter desktop app: main window and dialogs. |
+| `gui_support.py` | GUI settings, folder detection, and summary helpers (no tkinter). |
 | `tests/` | Pytest fixtures and regression tests. |
 
 ## Running from source
@@ -52,6 +53,13 @@ CI runs on Python 3.9, 3.13, and 3.14.
   `sys.argv`, `sys.stdout`, or the working directory.
 - The GUI disables terminal spinners because windowed PyInstaller builds may not
   have a usable `sys.stdout`.
+- `gui_support` holds the GUI’s tkinter-free logic — saved settings, ROM-folder
+  detection, and result summaries — so those tests run without a display.
+- The GUI’s main action runs a dry run first, shows the counts, and only applies
+  after confirmation. If neither the gamelists nor the catalog would change, it
+  reports “already up to date” and skips the write.
+- The reasoning behind that flow is recorded in
+  [ADR 0001](adr/0001-gui-primary-flow.md).
 
 ## Adding a system
 

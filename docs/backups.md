@@ -61,8 +61,8 @@ python3 restore_catalog.py                # restore
 - Saves the current `root.dat` and `fileinfo` as `*.recovery.bak` first.
 - Rolls back both files if the restored pair fails validation.
 
-The GUI has matching **Restore catalog (preview)** and **Restore catalog**
-buttons.
+The GUI exposes the same action with **Preview** and **Restore** under
+**Tools → Backups & restore…**.
 
 ## Delete old backups
 

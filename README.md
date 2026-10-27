@@ -32,14 +32,15 @@ and Windows steps.
 
 1. Connect the M15 storage and note the folder that contains `root.dat` and the
    system folders (usually `roms`).
-2. Open **M15Manager** and select that folder.
-3. Click **Preview (dry run)** first.
-4. Review the log. A catalog preflight failure means nothing was written; fix the
-   reported entries and try again.
-5. Click **Apply changes**.
-6. Eject safely and verify the library on the device.
+2. Open **M15Manager**. It reuses your last folder, or finds the card itself.
+3. Click **Update library**.
+4. Review the plain-language summary and confirm. Nothing is written before this
+   point, and the app says so if the library is already up to date.
+5. Eject safely and verify the library on the device.
 
-A dry run never writes, deletes, or creates backups.
+The check looks for new games, entries whose files are gone, and catalog drift.
+A catalog preflight failure means nothing was written; fix the reported entries
+and try again.
 
 ## What it does
 
@@ -75,17 +76,20 @@ are in [Device layout](docs/device-layout.md).
 
 The desktop app provides:
 
-- a system selector and every maintenance switch,
-- **Preview** and **Apply**,
-- **Restore gamelist**, **Restore catalog**, and **Delete backups** with preview
-  variants,
-- a live log and automatic ROM-folder detection.
+- one **Update library** action that checks first, explains the plan in plain
+  language, and only writes after you confirm,
+- automatic ROM-folder detection and a remembered last folder,
+- a system selector and every maintenance switch under **Advanced options**,
+- **Backups & restore** (restore gamelists, restore catalog, prune backups) in a
+  separate window,
+- a live details log that stays out of the way unless you open it or something
+  fails.
 
 See [GUI guide](docs/gui.md) for every button and option.
 
 ## Safety
 
-- Always preview first; **Preview** writes nothing.
+- **Update library** checks first; nothing is written until you confirm.
 - Modified files get timestamped backups. Catalog and gamelist restores create
   `*.recovery.bak` safety copies.
 - `--keep-baks N` keeps the newest N backups per file (default `5`, `0` keeps
@@ -137,7 +141,7 @@ python3 -m ruff check .
 ```
 
 The project stays flat: `gamelist_manager.py`, `catalog_sync.py`, `m15core.py`,
-`systems.py`, the restore/prune scripts, and `m15_gui.py`. See
+`systems.py`, the restore/prune scripts, `gui_support.py`, and `m15_gui.py`. See
 [Development](docs/development.md) and [Releasing](docs/releasing.md).
 
 ## License

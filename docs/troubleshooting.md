@@ -60,8 +60,9 @@ See [Backups and restore](backups.md).
 ## Backups are using too much space
 
 - Lower `--keep-baks` (default 5; `0` keeps all).
-- The GUI’s **Keep backups** control mirrors it.
-- Use `delete_gamelist_backups.py --dry-run` first, then apply.
+- In the GUI, **Advanced options → Keep backups** mirrors it.
+- Use `delete_gamelist_backups.py --dry-run` first, then apply, or use
+  **Tools → Backups & restore… → Delete old backups**.
 - Add `--catalog` to include `root.dat`/`fileinfo` backups.
 - Recovery backups are never pruned automatically; delete them explicitly only
   after verifying the device.
@@ -74,14 +75,62 @@ The app is ad-hoc signed, not notarized. Right-click → **Open** → **Open**, 
 xattr -dr com.apple.quarantine /Applications/M15Manager.app
 ```
 
+## The GUI window is blank when run from source
+
+Apple’s `/usr/bin/python3` links to the deprecated Tk 8.5, which no longer draws
+ttk interfaces on current macOS. The app builds and maps its widgets normally, so
+the window appears empty.
+
+Use a Python built against Tk 8.6 or newer:
+
+```bash
+brew install python@3.14 python-tk@3.14
+/opt/homebrew/bin/python3.14 m15_gui.py
+```
+
+If you use pyenv, `python3` still points at pyenv’s build (which has no usable
+Tk). Either call the Homebrew interpreter by its full path, as above, or rebuild
+a pyenv Python now that Homebrew’s `tcl-tk` is present:
+
+```bash
+pyenv install 3.14.10       # python-build auto-detects Homebrew tcl-tk
+pyenv global 3.14.10        # or: pyenv local 3.14.10
+python3 -c "import tkinter; print(tkinter.TkVersion)"   # expect 9.1
+python3 m15_gui.py
+```
+
+To rebuild an existing pyenv version instead, save its packages first:
+
+```bash
+~/.pyenv/versions/3.14.9/bin/python3 -m pip freeze > /tmp/pyenv-3.14.9.txt
+pyenv uninstall -f 3.14.9
+pyenv install 3.14.9
+~/.pyenv/versions/3.14.9/bin/python3 -m pip install -r /tmp/pyenv-3.14.9.txt
+```
+
+`python-build` prefers `tcl-tk@8` when it is installed and falls back to
+`tcl-tk`; both provide Tk 8.6+.
+
+Keep Homebrew’s `tcl-tk` installed: the pyenv `_tkinter` extension links to its
+dylibs at runtime. If `brew autoremove` removed it, `brew install tcl-tk`
+restores the same version without rebuilding Python; re-running the install also
+marks it as a top-level formula so it is not autoremoved again. Upgrading
+`tcl-tk` to a new version does require rebuilding the pyenv Python.
+
+Installing Python from [python.org](https://www.python.org/downloads/) also
+works. The released **M15Manager** app bundles a current Tk and is unaffected.
+The app prints a hint to stderr when it detects Tk 8.5.
+
 ## Windows SmartScreen warning
 
 Click **More info** → **Run anyway**. The binaries are unsigned.
 
-## Preview exits non-zero
+## A CLI preview exits non-zero
 
-During a preview this often just means at least one inspected system folder had
-no usable backup. Check the log for the specific message.
+During a CLI preview this often just means at least one inspected system folder
+had no usable backup. Check the log for the specific message. The GUI does not
+show a warning for this: a preview with nothing to do is reported as “already up
+to date”.
 
 ## Preview without modifying anything
 
